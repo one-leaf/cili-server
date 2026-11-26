@@ -1,0 +1,39 @@
+{
+  "database": {
+    "path": "data/cili-server.db"
+  },
+  "server": {
+    "trust_forwarded_for": false
+  },
+  "git": {
+    "root": "data/git"
+  },
+  "admin": {
+    "initial_username": "admin",
+    "initial_password": "",
+    "cookie_secure": false,
+    "session_ttl_seconds": 43200
+  },
+  "sms": {
+    "provider": "tencent",
+    "tencent": {
+      "secret_id": "",
+      "secret_key": "",
+      "sdk_app_id": "",
+      "sign_name": "",
+      "template_id": "",
+      "region": "ap-guangzhou",
+      "timeout_seconds": 10,
+      "retries": 0
+    },
+    "verification": {
+      "code_pepper": "",
+      "code_ttl_seconds": 300,
+      "max_attempts": 5,
+      "cooldown_seconds": 60,
+      "per_hour_limit": 5,
+      "per_day_limit": 10,
+      "ip_hour_limit": 30
+    }
+  }
+}
