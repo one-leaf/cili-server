@@ -125,6 +125,7 @@ def test_group_workspace_conflict_uses_priority():
                     target_id=str(group["id"]), priority=1)
         high = create_bundle(
             conn, org_id=str(org["id"]), name="高",
+            model={"label": "m", "models": {"main": {"name": "m1"}}},
             workspaces=[{"key": "shared", "name": "高优先级"}],
         )
         bind_bundle(conn, bundle_id=str(high["id"]), target_type="group",
@@ -161,6 +162,11 @@ def test_config_requires_token_and_enabled_person():
 
 def test_config_includes_org_web_url_and_bumps_version():
     with _client() as (client, conn, org, _person, _group, token):
+        create_bundle(
+            conn, org_id=str(org["id"]), name="组织模型",
+            model={"label": "org", "models": {"main": {"name": "m1"}}},
+            is_default=True,
+        )
         first = client.get("/api/v1/config", headers=_auth(token))
         assert first.json()["org"]["web_url"] == ""
 
@@ -218,6 +224,7 @@ def test_config_injects_workspace_git_block():
             conn,
             org_id=str(org["id"]),
             name="共享",
+            model={"label": "m", "models": {"main": {"name": "m1"}}},
             workspaces=[
                 {"key": "rd-shared", "name": "研发共享", "memory_enabled": True}
             ],
@@ -240,7 +247,12 @@ def test_config_injects_workspace_git_block():
 
 
 def test_config_delivers_person_email():
-    with _client() as (client, conn, _org, person, _group, token):
+    with _client() as (client, conn, org, person, _group, token):
+        create_bundle(
+            conn, org_id=str(org["id"]), name="组织模型",
+            model={"label": "org", "models": {"main": {"name": "m1"}}},
+            is_default=True,
+        )
         assert client.get("/api/v1/config", headers=_auth(token)).json()["user"]["email"] == ""
 
         update_person(
@@ -254,8 +266,20 @@ def test_config_delivers_person_email():
         assert body["user"]["email"] == "zhangsan@example.com"
 
 
+def test_config_requires_model_configuration():
+    with _client() as (client, _conn, _org, _person, _group, token):
+        response = client.get("/api/v1/config", headers=_auth(token))
+        assert response.status_code == 409
+        assert response.json()["error"] == "org_model_not_configured"
+
+
 def test_version_changes_when_bundle_changes():
     with _client() as (client, conn, org, _person, _group, token):
+        create_bundle(
+            conn, org_id=str(org["id"]), name="基础",
+            model={"label": "base", "models": {"main": {"name": "m1"}}},
+            is_default=True,
+        )
         first = client.get("/api/v1/config", headers=_auth(token))
         version = first.json()["version"]
 

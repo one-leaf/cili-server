@@ -30,6 +30,26 @@ def _service(**overrides):
     return conn, provider, clock, service
 
 
+def test_send_resolves_provider_per_org():
+    conn = connect(":memory:")
+    init_schema(conn)
+    provider = MockSmsProvider()
+    seen: list[str] = []
+
+    def provider_for(org_id: str):
+        seen.append(org_id)
+        return provider
+
+    service = SmsVerificationService(
+        conn,
+        config=VerificationConfig(code_pepper="test-pepper"),
+        provider_for=provider_for,
+    )
+    service.send_code("13800000000", org_id="org_123")
+    assert seen == ["org_123"]
+    assert provider.sent
+
+
 def test_send_stores_hash_not_plaintext():
     conn, provider, _clock, service = _service()
     result = service.send_code("13800000000", ip="1.1.1.1")

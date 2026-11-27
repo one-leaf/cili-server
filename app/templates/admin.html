@@ -262,6 +262,28 @@
         <div id="settings-status" class="muted"></div>
         <div id="settings-error" class="error"></div>
       </div>
+      <div class="panel">
+        <h2>短信（腾讯云）</h2>
+        <p class="muted">验证码模板需先在腾讯云控制台创建并审核通过；服务端把 6 位验证码作为模板参数 1 发送。未在此配置时回退服务端 config.json / 环境变量。</p>
+        <form id="sms-form">
+          <div class="row">
+            <div class="field"><label>SecretId</label><input id="sms-secret-id" placeholder="未配置"></div>
+            <div class="field"><label>SecretKey</label><input id="sms-secret-key" type="password" autocomplete="new-password" placeholder="未配置"></div>
+            <div class="field"><label>SdkAppId</label><input id="sms-sdk-app-id"></div>
+          </div>
+          <div class="row">
+            <div class="field"><label>签名</label><input id="sms-sign-name"></div>
+            <div class="field"><label>模板 ID</label><input id="sms-template-id"></div>
+            <div class="field"><label>Region</label><input id="sms-region" placeholder="ap-guangzhou"></div>
+          </div>
+          <div class="row">
+            <button class="btn primary" type="submit">保存短信配置</button>
+            <button class="btn small" type="button" id="sms-reset">恢复默认（清除配置）</button>
+          </div>
+        </form>
+        <div id="sms-status" class="muted"></div>
+        <div id="sms-error" class="error"></div>
+      </div>
     </section>
   </main>
 </div>
@@ -336,10 +358,10 @@
     if (state.tab === 'repos') await renderRepos();
     if (state.tab === 'devices') await renderDevices();
     if (state.tab === 'audit') await renderAudit();
-    if (state.tab === 'settings') renderSettings();
+    if (state.tab === 'settings') await renderSettings();
   }
 
-  function renderSettings() {
+  async function renderSettings() {
     const current = state.orgs.find((org) => org.id === state.orgId);
     if (!current) return;
     const form = $('settings-form');
@@ -347,6 +369,28 @@
     form.elements.web_url.value = current.web_url || '';
     $('settings-status').textContent = '';
     $('settings-error').textContent = '';
+    await loadSmsSettings();
+  }
+
+  async function loadSmsSettings() {
+    const data = (await api(
+      `/api/v1/admin/orgs/${encodeURIComponent(state.orgId)}/sms`
+    )).sms;
+    const tencent = data.tencent || {};
+    $('sms-secret-id').value = '';
+    $('sms-secret-id').placeholder = tencent.secret_id_masked
+      ? `已配置：${tencent.secret_id_masked}（留空不改）` : '未配置';
+    $('sms-secret-key').value = '';
+    $('sms-secret-key').placeholder = tencent.has_secret_key
+      ? '已配置（留空不改）' : '未配置';
+    $('sms-sdk-app-id').value = tencent.sdk_app_id || '';
+    $('sms-sign-name').value = tencent.sign_name || '';
+    $('sms-template-id').value = tencent.template_id || '';
+    $('sms-region').value = tencent.region || 'ap-guangzhou';
+    $('sms-status').textContent = data.configured
+      ? '当前使用组织级腾讯短信配置'
+      : '当前未配置，使用服务端默认（config.json / 环境变量）';
+    $('sms-error').textContent = '';
   }
 
   function table(headers, rows) {
@@ -716,6 +760,48 @@
         $('settings-status').textContent = '已保存';
       } catch (error) {
         $('settings-error').textContent = error.message;
+      }
+    });
+
+    $('sms-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      $('sms-status').textContent = '';
+      $('sms-error').textContent = '';
+      const body = {
+        sdk_app_id: $('sms-sdk-app-id').value.trim(),
+        sign_name: $('sms-sign-name').value.trim(),
+        template_id: $('sms-template-id').value.trim(),
+        region: $('sms-region').value.trim(),
+      };
+      const secretId = $('sms-secret-id').value.trim();
+      const secretKey = $('sms-secret-key').value.trim();
+      if (secretId) body.secret_id = secretId;
+      if (secretKey) body.secret_key = secretKey;
+      try {
+        await api(
+          `/api/v1/admin/orgs/${encodeURIComponent(state.orgId)}/sms`,
+          { method: 'PUT', body },
+        );
+        await loadSmsSettings();
+        $('sms-status').textContent = '已保存并即时生效';
+      } catch (error) {
+        $('sms-error').textContent = error.message;
+      }
+    });
+
+    $('sms-reset').addEventListener('click', async () => {
+      if (!confirm('清除组织级短信配置，回退到服务端默认？')) return;
+      $('sms-status').textContent = '';
+      $('sms-error').textContent = '';
+      try {
+        await api(
+          `/api/v1/admin/orgs/${encodeURIComponent(state.orgId)}/sms`,
+          { method: 'DELETE' },
+        );
+        await loadSmsSettings();
+        $('sms-status').textContent = '已恢复服务端默认';
+      } catch (error) {
+        $('sms-error').textContent = error.message;
       }
     });
 

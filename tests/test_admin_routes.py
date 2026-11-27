@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 
 from fastapi.testclient import TestClient
@@ -136,6 +137,62 @@ def test_update_org_name():
         assert bad_url.status_code == 400
 
 
+def test_sms_settings_masked_and_clear():
+    with _client() as (client, conn, org):
+        _login(client)
+        org_id = org["id"]
+        initial = client.get(f"/api/v1/admin/orgs/{org_id}/sms")
+        assert initial.status_code == 200
+        sms = initial.json()["sms"]
+        assert sms["configured"] is False
+        assert sms["tencent"]["has_secret_key"] is False
+
+        put = client.put(
+            f"/api/v1/admin/orgs/{org_id}/sms",
+            json={
+                "secret_id": "AKIDexample12345678",
+                "secret_key": "super-secret-key-value",
+                "sdk_app_id": "1400000000",
+                "sign_name": "测试签名",
+                "template_id": "123456",
+                "region": "ap-guangzhou",
+            },
+        )
+        assert put.status_code == 200
+        sms = put.json()["sms"]
+        assert sms["configured"] is True
+        assert sms["tencent"]["has_secret_key"] is True
+        assert sms["tencent"]["secret_id_masked"].startswith("AKID")
+        assert sms["tencent"]["sdk_app_id"] == "1400000000"
+        assert "super-secret-key-value" not in put.text
+        assert "AKIDexample12345678" not in put.text
+
+        # 密钥留空表示不修改
+        put2 = client.put(
+            f"/api/v1/admin/orgs/{org_id}/sms", json={"template_id": "654321"}
+        )
+        assert put2.status_code == 200
+        assert put2.json()["sms"]["tencent"]["has_secret_key"] is True
+        assert put2.json()["sms"]["tencent"]["template_id"] == "654321"
+
+        # 新组织缺密钥 → 400
+        other = create_org(conn, name="Other", slug="other")
+        missing = client.put(
+            f"/api/v1/admin/orgs/{other['id']}/sms",
+            json={"sdk_app_id": "1", "sign_name": "s", "template_id": "t"},
+        )
+        assert missing.status_code == 400
+
+        entries = client.get(f"/api/v1/admin/audit?org_id={org_id}").json()["entries"]
+        assert any(entry["action"] == "sms_update" for entry in entries)
+        assert "super-secret-key-value" not in json.dumps(entries, ensure_ascii=False)
+
+        cleared = client.delete(f"/api/v1/admin/orgs/{org_id}/sms")
+        assert cleared.status_code == 200
+        after = client.get(f"/api/v1/admin/orgs/{org_id}/sms").json()["sms"]
+        assert after["configured"] is False
+
+
 def test_people_crud():
     with _client() as (client, _conn, org):
         _login(client)
@@ -181,12 +238,16 @@ def test_people_crud():
         assert client.get(f"/api/v1/admin/people?org_id={org_id}").json()["people"] == []
 
 
-def test_group_and_bundle_crud():
-    with _client() as (client, conn, org):
+def test_group_and_bundle_crud(tmp_path):
+    with _client(git_root=str(tmp_path / "git")) as (client, conn, org):
         _login(client)
         org_id = org["id"]
         person = create_person(
             conn, org_id=org_id, name="张三", phone="13800000000"
+        )
+        client.post(
+            "/api/v1/admin/repos",
+            json={"org_id": org_id, "slug": "rd", "name": "RD"},
         )
 
         group = client.post(
@@ -362,6 +423,36 @@ def test_devices_list_and_revoke():
         assert revoked.status_code == 200
         after = client.get(f"/api/v1/admin/devices?org_id={org['id']}").json()
         assert after["devices"][0]["revoked"] is True
+
+
+def test_bundle_workspace_requires_existing_repo(tmp_path):
+    with _client(git_root=str(tmp_path / "git")) as (client, _conn, org):
+        _login(client)
+        org_id = org["id"]
+        missing = client.post(
+            "/api/v1/admin/bundles",
+            json={
+                "org_id": org_id,
+                "name": "缺仓库",
+                "workspaces": [{"key": "missing", "name": "Missing"}],
+            },
+        )
+        assert missing.status_code == 400
+        assert "missing" in missing.json()["detail"]
+
+        client.post(
+            "/api/v1/admin/repos",
+            json={"org_id": org_id, "slug": "missing", "name": "Missing"},
+        )
+        ok = client.post(
+            "/api/v1/admin/bundles",
+            json={
+                "org_id": org_id,
+                "name": "有仓库",
+                "workspaces": [{"key": "missing", "name": "Missing"}],
+            },
+        )
+        assert ok.status_code == 200
 
 
 def test_repo_crud_and_derived_groups(tmp_path):

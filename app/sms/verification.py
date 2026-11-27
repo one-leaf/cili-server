@@ -67,16 +67,28 @@ class SmsVerificationService:
     def __init__(
         self,
         conn: sqlite3.Connection,
-        provider: SmsProvider,
-        config: VerificationConfig,
+        provider: SmsProvider | None = None,
+        config: VerificationConfig | None = None,
         *,
+        provider_for: Callable[[str], SmsProvider] | None = None,
         clock: Callable[[], float] = time.time,
     ):
+        if provider is None and provider_for is None:
+            raise ValueError("需要 provider 或 provider_for")
+        if config is None:
+            raise ValueError("需要验证码配置")
         self._conn = conn
         self._provider = provider
+        self._provider_for = provider_for
         self._config = config
         self._clock = clock
         self._lock = threading.RLock()
+
+    def _resolve_provider(self, org_id: str) -> SmsProvider:
+        if self._provider_for is not None:
+            return self._provider_for(org_id)
+        assert self._provider is not None
+        return self._provider
 
     def send_code(
         self, phone: str, *, org_id: str = "", ip: str = ""
@@ -116,7 +128,7 @@ class SmsVerificationService:
                 raise
 
         try:
-            self._provider.send(normalized, code)
+            self._resolve_provider(org_id).send(normalized, code)
         except BaseException:
             # 发送失败不占用用户的重发额度，也清掉未生效的验证码。
             try:

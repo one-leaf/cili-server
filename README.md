@@ -120,7 +120,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 7681
 - `POST /api/v1/auth/sms/verify`：body `{org_id, phone, code, device_name}`；校验通过后签发 30 天滑动设备令牌，返回 `{token, expires_at, org, user, config_version}`，其中 `org.id` 为 slug，`user.groups` 为群组名列表。
 - `GET /api/v1/auth/me`：`Authorization: Bearer <token>`，校验令牌并滑动续期。
 - `POST /api/v1/auth/logout`：`Authorization: Bearer <token>`，吊销令牌。
-- `GET /api/v1/config`：`Authorization: Bearer <token>`；`org` 含 `id`（slug）、`name`、`web_url`，`user` 含本人的 `email` 和 `groups`；`model` 会在配置包的模型配置上注入 `provider_key`（固定 `org-<slug>`）和该人员的 `api_key`；`workspaces[].git` 会补齐 `remote_url`（缺省用 `web_url` + `/git/<key>.git` 拼接）、`branch`、`username: "org"`、`password`（当前设备令牌）、`sync_mode`（默认 `remote_wins`）。支持 `If-None-Match`（ETag = 组织 config_version + 人员 updated_at），命中返回 304。
+- `GET /api/v1/config`：`Authorization: Bearer <token>`；`org` 含 `id`（slug）、`name`、`web_url`，`user` 含本人的 `email` 和 `groups`；`model` 会在配置包的模型配置上注入 `provider_key`（固定 `org-<slug>`）和该人员的 `api_key`；`workspaces[].git` 会补齐 `remote_url`（缺省用 `web_url` + `/git/<key>.git` 拼接）、`branch`、`username: "org"`、`password`（当前设备令牌）、`sync_mode`（默认 `remote_wins`）。支持 `If-None-Match`（ETag = 组织 config_version + 人员 updated_at），命中返回 304。若该人员没有可用的模型配置，返回 409 `org_model_not_configured`（客户端需要 model 才能应用配置）。
 - 错误统一为 `{"error": "<code>", "detail": "<说明>"}`；限流额外带 `retry_after`。
 
 设备令牌只在 verify 响应中出现一次；数据库只存 SHA-256 哈希，30 天有效，每次 `/me` 或配置拉取时续期。
@@ -128,7 +128,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 7681
 配置包解析（`app/services/bundles.py`）：
 
 - 模型：个人包 > 群组包（按绑定/包优先级）> 默认包，第一个有 `model_json` 的胜出；
-- 工作区：只来自群组包，按 `key` 并集，同 key 高优先级覆盖，再按 `group_id` 排序；
+- 工作区：只来自群组包，按 `key` 并集，同 key 高优先级覆盖，再按 `group_id` 排序；保存配置包时要求每个工作区 `key` 都有同 slug 的仓库（没有则 400，提示先在仓库页创建）；
 - 群组成员变化、Bundle 创建/更新/绑定都会推进组织 `config_version`。
 
 管理端页面：`http://<host>:7681/admin`（登录后可管理人员/群组/配置包/仓库/设备/审计）。
@@ -139,6 +139,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 7681
 
 - `POST /login` / `POST /logout` / `GET /me`
 - `GET /orgs`、`PATCH /orgs/{id}`：修改企业名称和对外 Web 地址（两者都会随 `/api/v1/config` 下发并推进 config_version）
+- `GET/PUT/DELETE /orgs/{id}/sms`：组织级腾讯云短信配置（SecretId/SecretKey/SdkAppId/签名/模板/Region），保存后即时生效；响应只返回 SecretId 掩码与 `has_secret_key`，不返回密钥明文
 - `GET/POST /people`、`PATCH/DELETE /people/{id}`
 - `GET/POST /groups`、`PATCH/DELETE /groups/{id}`、成员增删
 - `GET/POST /bundles`、`PATCH/DELETE /bundles/{id}`、`POST /bundles/{id}/bind`、`GET /bindings`、`DELETE /bindings/{id}`
@@ -173,7 +174,8 @@ python -m pytest -q
 
 ## 安全约定
 
-- SecretId / SecretKey 只来自 `config.json` 或环境变量，不进数据库、不进管理端、不出现在 API 响应。
+- 腾讯云 SecretId / SecretKey 可在管理端「设置 → 短信（腾讯云）」按组织配置（存数据库，保存后即时生效；接口只返回掩码，审计与访问日志不记录）；未配置时回退 `config.json` 或环境变量。组织配置优先于配置文件/环境变量。
+- 验证码模板需在腾讯云控制台创建并审核通过；服务端固定把 6 位验证码作为模板参数 `{1}`（`TemplateParamSet.0`）发送，`SignName` 必须与模板签名一致。`SdkAppId` 兼容 aiway 配置里的 `sms_sdk_app_id` 写法。
 - `config.json` 位于 `data/config/`（整个 `data/` 已 gitignore）；不要把它提交到 Git。
 - 人员模型 API Key 随 `/api/v1/config` 下发给本人设备；管理端（需管理员登录）会明文返回以便核对，审计与访问日志不记录 Key。
 - 日志不打印验证码（`mock` provider 例外，仅本地）。

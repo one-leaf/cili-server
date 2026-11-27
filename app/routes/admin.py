@@ -25,6 +25,7 @@ from app.services.bundles import (
     bind_bundle,
     create_bundle,
     delete_bundle,
+    get_bundle,
     list_bindings,
     list_bundles,
     unbind_bundle,
@@ -97,6 +98,34 @@ def _service_call(fn, *args, **kwargs):
         raise ApiError(409, "conflict") from exc
 
 
+def _validate_workspace_repos(conn: sqlite3.Connection, org_id: str, workspaces) -> None:
+    """配置包里的每个共享工作区都必须已有同名仓库（key = 仓库 slug）。"""
+    keys: list[str] = []
+    for item in workspaces or []:
+        key = str((item or {}).get("key") or "").strip()
+        if not key:
+            raise ApiError(400, "invalid_request", message="共享工作区的 key 不能为空")
+        keys.append(key)
+    if not keys:
+        return
+    existing = {
+        str(row["slug"])
+        for row in conn.execute(
+            "SELECT slug FROM repos WHERE org_id = ?", (org_id,)
+        )
+    }
+    missing = [key for key in keys if key not in existing]
+    if missing:
+        raise ApiError(
+            400,
+            "invalid_request",
+            message=(
+                "以下工作区没有对应仓库（请先在仓库页创建）: "
+                + ", ".join(missing)
+            ),
+        )
+
+
 def _require_org(conn: sqlite3.Connection, org_id: str):
     if not org_id:
         raise ApiError(400, "org_required")
@@ -131,6 +160,39 @@ def _fmt_ts(value) -> str:
         return datetime.fromtimestamp(int(value)).strftime("%Y-%m-%d %H:%M:%S")
     except (TypeError, ValueError, OSError):
         return ""
+
+
+def _mask_secret(value: str) -> str:
+    value = str(value or "")
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return "*" * len(value)
+    return value[:4] + "*" * (len(value) - 8) + value[-4:]
+
+
+def _org_sms_payload(org) -> dict:
+    raw = str(org["sms_config"] or "")
+    data: dict = {}
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                data = parsed
+        except (TypeError, ValueError):
+            data = {}
+    return {
+        "provider": str(org["sms_provider"] or ""),
+        "configured": bool(data.get("secret_id") and data.get("secret_key")),
+        "tencent": {
+            "secret_id_masked": _mask_secret(str(data.get("secret_id") or "")),
+            "has_secret_key": bool(data.get("secret_key")),
+            "sdk_app_id": str(data.get("sdk_app_id") or ""),
+            "sign_name": str(data.get("sign_name") or ""),
+            "template_id": str(data.get("template_id") or ""),
+            "region": str(data.get("region") or "ap-guangzhou"),
+        },
+    }
 
 
 def _person(row) -> dict:
@@ -228,6 +290,15 @@ class LoginRequest(BaseModel):
 class OrgUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=64)
     web_url: str | None = Field(default=None, max_length=200)
+
+
+class SmsSettingsUpdate(BaseModel):
+    secret_id: str | None = Field(default=None, max_length=200)
+    secret_key: str | None = Field(default=None, max_length=200)
+    sdk_app_id: str | None = Field(default=None, max_length=64)
+    sign_name: str | None = Field(default=None, max_length=128)
+    template_id: str | None = Field(default=None, max_length=64)
+    region: str | None = Field(default=None, max_length=64)
 
 
 class PersonCreate(BaseModel):
@@ -404,6 +475,90 @@ async def update_org_route(
             "web_url": str(row["web_url"]),
         }
     }
+
+
+# ── 短信（腾讯云） ─────────────────────────────────────
+
+
+@router.get("/orgs/{org_id}/sms")
+async def get_org_sms(
+    org_id: str, request: Request, _admin=Depends(require_admin)
+):
+    org = _require_org(_conn(request), org_id)
+    return {"sms": _org_sms_payload(org)}
+
+
+@router.put("/orgs/{org_id}/sms")
+async def put_org_sms(
+    org_id: str, payload: SmsSettingsUpdate, request: Request,
+    _admin=Depends(require_admin),
+):
+    _check_origin(request)
+    conn = _conn(request)
+    org = _require_org(conn, org_id)
+    merged: dict = {}
+    raw = str(org["sms_config"] or "")
+    if raw:
+        try:
+            existing = json.loads(raw)
+            if isinstance(existing, dict):
+                merged.update(existing)
+        except (TypeError, ValueError):
+            merged = {}
+    for field in ("sdk_app_id", "sign_name", "template_id", "region"):
+        value = getattr(payload, field)
+        if value is not None:
+            merged[field] = value.strip()
+    # 密钥留空表示不修改
+    for field in ("secret_id", "secret_key"):
+        value = getattr(payload, field)
+        if value:
+            merged[field] = value.strip()
+    merged["provider"] = "tencent"
+    if not str(merged.get("region") or "").strip():
+        merged["region"] = "ap-guangzhou"
+    missing = [
+        field
+        for field in (
+            "secret_id", "secret_key", "sdk_app_id", "sign_name", "template_id"
+        )
+        if not str(merged.get(field) or "").strip()
+    ]
+    if missing:
+        raise ApiError(
+            400, "invalid_request", message="缺少字段: " + ", ".join(missing)
+        )
+    conn.execute(
+        "UPDATE organizations SET sms_provider = 'tencent', sms_config = ?"
+        " WHERE id = ?",
+        (json.dumps(merged, ensure_ascii=False), org_id),
+    )
+    conn.commit()
+    resolver = getattr(request.app.state, "sms_resolver", None)
+    if resolver is not None:
+        resolver.invalidate(org_id)
+    _audit(request, _admin, org_id, "sms_update", target=org_id, detail="tencent")
+    return {"sms": _org_sms_payload(_require_org(conn, org_id))}
+
+
+@router.delete("/orgs/{org_id}/sms")
+async def delete_org_sms(
+    org_id: str, request: Request, _admin=Depends(require_admin)
+):
+    _check_origin(request)
+    conn = _conn(request)
+    _require_org(conn, org_id)
+    conn.execute(
+        "UPDATE organizations SET sms_provider = '', sms_config = ''"
+        " WHERE id = ?",
+        (org_id,),
+    )
+    conn.commit()
+    resolver = getattr(request.app.state, "sms_resolver", None)
+    if resolver is not None:
+        resolver.invalidate(org_id)
+    _audit(request, _admin, org_id, "sms_reset", target=org_id)
+    return {"ok": True}
 
 
 # ── 人员 ──────────────────────────────────────────────
@@ -601,9 +756,11 @@ async def create_bundle_route(
     payload: BundleCreate, request: Request, _admin=Depends(require_admin)
 ):
     _check_origin(request)
-    _require_org(_conn(request), payload.org_id)
+    conn = _conn(request)
+    _require_org(conn, payload.org_id)
+    _validate_workspace_repos(conn, payload.org_id, payload.workspaces)
     row = _service_call(
-        create_bundle, _conn(request),
+        create_bundle, conn,
         org_id=payload.org_id, name=payload.name, model=payload.model,
         workspaces=payload.workspaces, priority=payload.priority,
         is_default=payload.is_default,
@@ -619,8 +776,14 @@ async def update_bundle_route(
     _admin=Depends(require_admin),
 ):
     _check_origin(request)
+    conn = _conn(request)
+    existing = get_bundle(conn, bundle_id)
+    if existing is None:
+        raise ApiError(404, "bundle_not_found")
+    if payload.workspaces is not None:
+        _validate_workspace_repos(conn, str(existing["org_id"]), payload.workspaces)
     row = _service_call(
-        update_bundle, _conn(request), bundle_id,
+        update_bundle, conn, bundle_id,
         name=payload.name, model=payload.model, workspaces=payload.workspaces,
         priority=payload.priority, is_default=payload.is_default,
     )

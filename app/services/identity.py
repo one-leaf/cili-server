@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets
 import sqlite3
 import time
@@ -15,6 +16,7 @@ from dataclasses import dataclass
 from app.sms.base import normalize_phone
 
 DEVICE_TOKEN_TTL_SECONDS = 30 * 24 * 3600
+ORG_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,11 @@ def create_org(
     slug: str,
     now: int | None = None,
 ) -> sqlite3.Row:
+    slug = str(slug or "").strip()
+    if not ORG_SLUG_RE.match(slug):
+        raise ValueError(
+            "组织 slug 只允许小写字母、数字、连字符，且以字母/数字开头"
+        )
     org_id = "org_" + uuid.uuid4().hex[:12]
     created = int(now if now is not None else time.time())
     config_version = f"{created}-{uuid.uuid4().hex[:8]}"

@@ -7,6 +7,7 @@ import json
 import pytest
 
 from app.settings import load_settings
+from app.sms import build_provider
 from app.sms.base import SmsConfigError
 
 
@@ -52,6 +53,27 @@ def test_load_tencent_from_file(tmp_path):
     assert cfg.retries == 2
 
 
+def test_aiway_sdk_app_id_alias(tmp_path):
+    path = _write(
+        tmp_path,
+        {
+            "sms": {
+                "provider": "tencent",
+                "tencent": {
+                    "secret_id": "id",
+                    "secret_key": "key",
+                    "sms_sdk_app_id": "1400386382",
+                    "sign_name": "sign",
+                    "template_id": "tpl",
+                },
+            }
+        },
+    )
+    settings = load_settings(path)
+    assert settings.sms.tencent is not None
+    assert settings.sms.tencent.sdk_app_id == "1400386382"
+
+
 def test_env_overrides_secrets(tmp_path, monkeypatch):
     path = _write(
         tmp_path,
@@ -75,16 +97,17 @@ def test_env_overrides_secrets(tmp_path, monkeypatch):
     assert settings.sms.tencent.secret_key == "env-key"
 
 
-def test_tencent_missing_fields_fails(tmp_path):
+def test_tencent_missing_fields_deferred_to_send(tmp_path):
+    # 密钥缺失不再阻止启动（管理端可先启动再配置）；构建 provider 时才报错
     path = _write(
         tmp_path,
         {"sms": {"provider": "tencent", "tencent": {"secret_id": "only-id"}}},
     )
-    with pytest.raises(SmsConfigError) as exc:
-        load_settings(path)
-    message = str(exc.value)
-    assert "secret_key" in message
-    assert "sdk_app_id" in message
+    settings = load_settings(path)
+    assert settings.sms.provider == "tencent"
+    assert settings.sms.tencent is None
+    with pytest.raises(SmsConfigError):
+        build_provider(settings)
 
 
 def test_unknown_provider_fails(tmp_path):

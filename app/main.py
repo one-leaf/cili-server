@@ -22,7 +22,7 @@ from app.routes.git_http import router as git_router
 from app.routes.public import router as public_router
 from app.services.admin_auth import seed_initial_admin
 from app.settings import Settings, load_settings
-from app.sms import build_provider
+from app.sms.registry import SmsProviderResolver
 from app.sms.base import (
     SmsConfigError,
     SmsError,
@@ -84,7 +84,17 @@ def create_app(
         db_conn = conn or connect(cfg.database_path)
         init_schema(db_conn)
         seed_initial_admin(db_conn, cfg.admin)
-        sms_provider = provider or build_provider(cfg)
+
+        if provider is not None:
+            sms_resolver = None
+            sms_service = SmsVerificationService(
+                db_conn, provider, cfg.verification
+            )
+        else:
+            sms_resolver = SmsProviderResolver(db_conn, cfg)
+            sms_service = SmsVerificationService(
+                db_conn, config=cfg.verification, provider_for=sms_resolver.get
+            )
 
         access_handler = None
         if cfg.access_log_path:
@@ -104,15 +114,14 @@ def create_app(
 
         app.state.settings = cfg
         app.state.conn = db_conn
-        app.state.sms_provider = sms_provider
-        app.state.sms_service = SmsVerificationService(
-            db_conn, sms_provider, cfg.verification
-        )
+        app.state.sms_provider = provider or sms_resolver
+        app.state.sms_resolver = sms_resolver
+        app.state.sms_service = sms_service
         try:
             yield
         finally:
-            if provider is None and hasattr(sms_provider, "close"):
-                sms_provider.close()
+            if sms_resolver is not None:
+                sms_resolver.close()
             if access_handler is not None:
                 logging.getLogger(ACCESS_LOGGER).removeHandler(access_handler)
                 access_handler.close()

@@ -48,6 +48,12 @@ async def get_config(request: Request):
         raise ApiError(403, "person_disabled")
 
     payload = resolve_config(conn, org=org, person=person, token=token)
+    if payload.get("model") is None:
+        raise ApiError(
+            409,
+            "org_model_not_configured",
+            message="尚未为该人员下发模型配置，请先在配置包中配置模型并绑定",
+        )
     etag = f'"{payload["version"]}"'
     if _normalize_etag(request.headers.get("if-none-match", "")) == payload["version"]:
         return Response(status_code=304, headers={"ETag": etag})

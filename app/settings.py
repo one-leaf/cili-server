@@ -126,11 +126,16 @@ def load_settings(path: str | Path | None = None) -> Settings:
 
     secret_id = _value("CILI_SMS_TENCENT_SECRET_ID", "secret_id")
     secret_key = _value("CILI_SMS_TENCENT_SECRET_KEY", "secret_key")
-    sdk_app_id = _value("CILI_SMS_TENCENT_SDK_APP_ID", "sdk_app_id")
+    # 兼容 aiway 配置里的 sms_sdk_app_id 写法
+    sdk_app_id = (
+        _value("CILI_SMS_TENCENT_SDK_APP_ID", "sdk_app_id")
+        or str(tencent_raw.get("sms_sdk_app_id") or "").strip()
+    )
     sign_name = _value("CILI_SMS_TENCENT_SIGN_NAME", "sign_name")
     template_id = _value("CILI_SMS_TENCENT_TEMPLATE_ID", "template_id")
     region = _value("CILI_SMS_TENCENT_REGION", "region", "ap-guangzhou")
 
+    missing: list[str] = []
     if provider == "tencent":
         missing = [
             name
@@ -143,15 +148,11 @@ def load_settings(path: str | Path | None = None) -> Settings:
             )
             if not value
         ]
-        if missing:
-            raise SmsConfigError(
-                "tencent 短信配置缺少: " + ", ".join(missing)
-                + "（在 cili-server 的 config.json 或环境变量中设置）"
-            )
 
     timeout_seconds = _positive_float(tencent_raw.get("timeout_seconds"), 10.0)
     retries = _non_negative_int(tencent_raw.get("retries"), 0)
 
+    # 密钥缺失不再阻止启动：管理端可通过设置面板按组织配置，实际发送时才报错。
     tencent = TencentSmsConfig(
         secret_id=secret_id,
         secret_key=secret_key,
@@ -161,7 +162,7 @@ def load_settings(path: str | Path | None = None) -> Settings:
         region=region,
         timeout_seconds=timeout_seconds,
         retries=retries,
-    ) if provider == "tencent" else None
+    ) if provider == "tencent" and not missing else None
 
     verification_raw = sms_raw.get("verification")
     if not isinstance(verification_raw, dict):

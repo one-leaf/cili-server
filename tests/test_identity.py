@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.db import connect, init_schema
 from app.services.identity import (
     authenticate_token,
@@ -12,6 +14,14 @@ from app.services.identity import (
     hash_token,
     revoke_token,
 )
+
+
+def test_create_org_rejects_invalid_slug():
+    conn = connect(":memory:")
+    init_schema(conn)
+    for slug in ("Acme", "a/b", "", "-bad", "有中文"):
+        with pytest.raises(ValueError):
+            create_org(conn, name="X", slug=slug)
 
 
 def _seed():
