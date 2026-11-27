@@ -59,8 +59,8 @@ from app.services.repos import (
     delete_repo,
     get_repo,
     list_repos,
-    repo_groups,
-    set_repo_groups,
+    repo_group,
+    set_repo_group,
     update_repo,
 )
 
@@ -386,15 +386,15 @@ class RepoCreate(BaseModel):
     org_id: str
     slug: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=64)
-    group_ids: list[str] = []
+    group_id: str = ""
 
 
 class RepoUpdate(BaseModel):
     name: str | None = None
 
 
-class RepoGroupsUpdate(BaseModel):
-    group_ids: list[str] = []
+class RepoGroupUpdate(BaseModel):
+    group_id: str = ""
 
 
 @router.post("/login")
@@ -804,7 +804,7 @@ async def repos(org_id: str, request: Request, _admin=Depends(require_admin)):
     items = []
     for row in list_repos(conn, org_id):
         item = _repo(row)
-        item["groups"] = repo_groups(conn, str(row["id"]))
+        item["group"] = repo_group(conn, str(row["id"]))
         items.append(item)
     return {"repos": items}
 
@@ -819,7 +819,7 @@ async def create_repo_route(
         create_repo, _conn(request),
         git_root=request.app.state.settings.git_root,
         org_id=payload.org_id, slug=payload.slug, name=payload.name,
-        group_ids=payload.group_ids,
+        group_id=payload.group_id,
     )
     _audit(request, _admin, payload.org_id, "repo_create",
            target=str(row["id"]), detail=payload.slug)
@@ -840,23 +840,22 @@ async def update_repo_route(
     return {"repo": _repo(row)}
 
 
-@router.put("/repos/{repo_id}/groups")
-async def set_repo_groups_route(
-    repo_id: str, payload: RepoGroupsUpdate, request: Request,
+@router.put("/repos/{repo_id}/group")
+async def set_repo_group_route(
+    repo_id: str, payload: RepoGroupUpdate, request: Request,
     _admin=Depends(require_admin),
 ):
     _check_origin(request)
     conn = _conn(request)
     row = _service_call(
-        set_repo_groups, conn,
-        repo_id=repo_id, group_ids=payload.group_ids,
+        set_repo_group, conn, repo_id=repo_id, group_id=payload.group_id
     )
-    groups = repo_groups(conn, repo_id)
+    group = repo_group(conn, repo_id)
     _audit(
-        request, _admin, str(row["org_id"]), "repo_groups_update",
-        target=repo_id, detail=",".join(group["name"] for group in groups),
+        request, _admin, str(row["org_id"]), "repo_group_update",
+        target=repo_id, detail=(group or {}).get("name", ""),
     )
-    return {"repo": {**_repo(row), "groups": groups}}
+    return {"repo": {**_repo(row), "group": group}}
 
 
 @router.delete("/repos/{repo_id}")

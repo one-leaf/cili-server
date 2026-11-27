@@ -47,7 +47,7 @@ def _client(tmp_path):
         org_id=str(org["id"]),
         slug="demo",
         name="Demo",
-        group_ids=[str(group["id"])],
+        group_id=str(group["id"]),
     )
     settings = Settings(
         sms=SmsConfig(provider="mock"),
@@ -132,7 +132,7 @@ def test_group_member_has_read_write(tmp_path):
 
 def test_repo_without_group_binding_is_denied(tmp_path):
     with _client(tmp_path) as (client, conn, _org, _person, _group, _repo, token):
-        conn.execute("DELETE FROM repo_groups")
+        conn.execute("UPDATE repos SET group_id = NULL")
         conn.commit()
         response = client.get(
             "/git/demo.git/info/refs?service=git-upload-pack",

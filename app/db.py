@@ -72,17 +72,10 @@ CREATE TABLE IF NOT EXISTS repos (
     org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     slug TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
+    group_id TEXT REFERENCES groups(id) ON DELETE SET NULL,
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_repos_org ON repos(org_id);
-
-CREATE TABLE IF NOT EXISTS repo_groups (
-    repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
-    group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    PRIMARY KEY(repo_id, group_id)
-);
-CREATE INDEX IF NOT EXISTS idx_repo_groups_group
-    ON repo_groups(group_id);
 
 
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -164,14 +157,35 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "people", "model_api_key", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "sms_codes", "org_id", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "sms_send_events", "org_id", "TEXT NOT NULL DEFAULT ''")
+    if _ensure_column(
+        conn, "repos", "group_id", "TEXT REFERENCES groups(id) ON DELETE SET NULL"
+    ):
+        # 一次性迁移：旧的仓库-群组多对多表 → 仓库只保留一个群组
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        if "repo_groups" in tables:
+            for row in conn.execute(
+                "SELECT repo_id, MIN(group_id) AS group_id FROM repo_groups"
+                " GROUP BY repo_id"
+            ):
+                conn.execute(
+                    "UPDATE repos SET group_id = ? WHERE id = ?",
+                    (row["group_id"], row["repo_id"]),
+                )
     conn.commit()
 
 
 def _ensure_column(
     conn: sqlite3.Connection, table: str, column: str, ddl: str
-) -> None:
+) -> bool:
     columns = {
         row[1] for row in conn.execute(f"PRAGMA table_info({table})")
     }
     if column not in columns:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        return True
+    return False

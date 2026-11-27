@@ -128,7 +128,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 7681
 配置下发规则（`app/services/delivery.py`）：
 
 - 模型：组织级一套，所有人员共用；API Key 按人员（`people.model_api_key`）注入；
-- 工作区：仓库在仓库页绑定群组；人员属于哪个群组，就下发该群组绑定的仓库（同一仓库被多个群组绑定时只出现一次）；
+- 工作区：每个仓库绑定一个群组；人员属于哪个群组，就下发该群组绑定的仓库。需要跨群访问时，把人员加入对应群组即可；
 - 仓库创建/改名/删除、仓库群组变更、人员与群组变更都会推进组织 `config_version`。
 
 管理端页面：`http://<host>:7681/admin`（登录后可管理人员/群组/模型设置/仓库/设备/审计）。
@@ -146,7 +146,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 7681
 - `GET/PUT /orgs/{id}/model`：组织级共享模型设置（所有人共用；不含人员 Key）
 - `GET /devices`、`POST /devices/{id}/revoke`
 - `GET /audit?org_id=&limit=&before_id=`：管理端审计日志（登录、人员/群组/模型设置/设备/仓库变更）
-- `GET/POST /repos`、`PUT /repos/{id}/groups`（设置授权群组）、`DELETE /repos/{id}`；仓库绑定的群组成员获得读写权限并下发对应工作区。
+- `GET/POST /repos`、`PUT /repos/{id}/group`（设置所属群组，一对一）、`DELETE /repos/{id}`；仓库所属群组成员获得读写权限并下发对应工作区。
 
 ## Git 网关
 
@@ -160,7 +160,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 7681
 - `POST /git/<slug>.git/git-upload-pack`
 - `POST /git/<slug>.git/git-receive-pack`
 
-校验链：Basic 令牌 → 设备未吊销/未过期 → 人员启用 → 仓库群组授权（人员属于仓库绑定的群组）→ `git http-backend`。授权即读写，没有只读模式。
+校验链：Basic 令牌 → 设备未吊销/未过期 → 人员启用 → 仓库群组授权（人员属于仓库所属群组）→ `git http-backend`。授权即读写，没有只读模式。
 
 仓库创建时会 `git init --bare` 并写入初始提交（`.gitignore` 含 `.cili/`），同时启用 `http.receivepack`。
 

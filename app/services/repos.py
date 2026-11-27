@@ -90,7 +90,7 @@ def create_repo(
     org_id: str,
     slug: str,
     name: str,
-    group_ids: list[str] | None = None,
+    group_id: str = "",
     now: int | None = None,
 ) -> sqlite3.Row:
     slug = str(slug or "").strip()
@@ -100,29 +100,18 @@ def create_repo(
     ).fetchone()
     if org is None:
         raise ValueError("组织不存在")
-    for group_id in group_ids or []:
-        group = conn.execute(
-            "SELECT org_id FROM groups WHERE id = ?", (group_id,)
-        ).fetchone()
-        if group is None or str(group["org_id"]) != str(org_id):
-            raise ValueError("授权群组不存在或不属于同一组织")
+    owner_group = _validated_group(conn, org_id, group_id)
     _init_bare_repo(path)
     repo_id = "repo_" + uuid.uuid4().hex[:12]
     try:
         conn.execute(
-            "INSERT INTO repos (id, org_id, slug, name, created_at)"
-            " VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO repos (id, org_id, slug, name, group_id, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
             (
-                repo_id, org_id, slug, str(name),
+                repo_id, org_id, slug, str(name), owner_group,
                 int(now if now is not None else time.time()),
             ),
         )
-        for group_id in group_ids or []:
-            conn.execute(
-                "INSERT OR IGNORE INTO repo_groups (repo_id, group_id)"
-                " VALUES (?, ?)",
-                (repo_id, group_id),
-            )
         conn.commit()
     except BaseException:
         conn.rollback()
@@ -180,56 +169,53 @@ def delete_repo(
     return True
 
 
-def set_repo_groups(
-    conn: sqlite3.Connection, *, repo_id: str, group_ids: list[str]
+def _validated_group(conn: sqlite3.Connection, org_id: str, group_id: str):
+    value = str(group_id or "").strip()
+    if not value:
+        return None
+    group = conn.execute(
+        "SELECT org_id FROM groups WHERE id = ?", (value,)
+    ).fetchone()
+    if group is None or str(group["org_id"]) != str(org_id):
+        raise ValueError("群组不存在或不属于同一组织")
+    return value
+
+
+def set_repo_group(
+    conn: sqlite3.Connection, *, repo_id: str, group_id: str = ""
 ) -> sqlite3.Row:
-    """覆盖仓库的授权群组（读写）。"""
+    """设置仓库所属群组（一对一）；空值表示取消绑定。"""
     repo = get_repo(conn, repo_id)
     if repo is None:
         raise ValueError("仓库不存在")
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for group_id in group_ids or []:
-        group_id = str(group_id)
-        if group_id in seen:
-            continue
-        group = conn.execute(
-            "SELECT org_id FROM groups WHERE id = ?", (group_id,)
-        ).fetchone()
-        if group is None or str(group["org_id"]) != str(repo["org_id"]):
-            raise ValueError("授权群组不存在或不属于同一组织")
-        seen.add(group_id)
-        ordered.append(group_id)
-    conn.execute("DELETE FROM repo_groups WHERE repo_id = ?", (repo_id,))
-    for group_id in ordered:
-        conn.execute(
-            "INSERT OR IGNORE INTO repo_groups (repo_id, group_id)"
-            " VALUES (?, ?)",
-            (repo_id, group_id),
-        )
+    owner_group = _validated_group(conn, str(repo["org_id"]), group_id)
+    conn.execute(
+        "UPDATE repos SET group_id = ? WHERE id = ?", (owner_group, repo_id)
+    )
     conn.commit()
     bump_config_version(conn, str(repo["org_id"]))
     return get_repo(conn, repo_id)
 
 
-def repo_groups(conn: sqlite3.Connection, repo_id: str) -> list[dict]:
-    rows = conn.execute(
-        "SELECT g.id, g.name FROM repo_groups rg"
-        " JOIN groups g ON g.id = rg.group_id"
-        " WHERE rg.repo_id = ? ORDER BY g.name, g.id",
+def repo_group(conn: sqlite3.Connection, repo_id: str) -> dict | None:
+    row = conn.execute(
+        "SELECT g.id, g.name FROM repos r"
+        " JOIN groups g ON g.id = r.group_id WHERE r.id = ?",
         (repo_id,),
-    )
-    return [{"id": str(row["id"]), "name": str(row["name"])} for row in rows]
+    ).fetchone()
+    if row is None:
+        return None
+    return {"id": str(row["id"]), "name": str(row["name"])}
 
 
 def repo_access(
     conn: sqlite3.Connection, *, person_id: str, repo_id: str
 ) -> str | None:
-    """仓库授权：人员在仓库绑定群组内即可读写。"""
+    """仓库授权：人员属于仓库所属群组即可读写。"""
     row = conn.execute(
-        "SELECT 1 FROM repo_groups rg"
-        " JOIN group_members gm ON gm.group_id = rg.group_id"
-        " WHERE rg.repo_id = ? AND gm.person_id = ? LIMIT 1",
+        "SELECT 1 FROM repos r"
+        " JOIN group_members gm ON gm.group_id = r.group_id"
+        " WHERE r.id = ? AND gm.person_id = ? LIMIT 1",
         (repo_id, person_id),
     ).fetchone()
     return "write" if row is not None else None

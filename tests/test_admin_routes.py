@@ -383,17 +383,17 @@ def test_deleting_group_removes_repo_binding(tmp_path):
                 "org_id": org_id,
                 "slug": "demo",
                 "name": "Demo",
-                "group_ids": [group["id"]],
+                "group_id": group["id"],
             },
         ).json()["repo"]
 
         listed = client.get(f"/api/v1/admin/repos?org_id={org_id}").json()["repos"]
-        assert [g["name"] for g in listed[0]["groups"]] == ["研发部"]
+        assert listed[0]["group"]["name"] == "研发部"
 
         assert client.delete(f"/api/v1/admin/groups/{group['id']}").status_code == 200
         listed = client.get(f"/api/v1/admin/repos?org_id={org_id}").json()["repos"]
         assert listed[0]["id"] == repo["id"]
-        assert listed[0]["groups"] == []
+        assert listed[0]["group"] is None
 
 
 def test_devices_list_and_revoke():
@@ -432,20 +432,20 @@ def test_repo_groups_api(tmp_path):
             json={"org_id": org_id, "slug": "demo", "name": "Demo"},
         ).json()["repo"]
         listed = client.get(f"/api/v1/admin/repos?org_id={org_id}").json()["repos"]
-        assert listed[0]["groups"] == []
+        assert listed[0]["group"] is None
 
         updated = client.put(
-            f"/api/v1/admin/repos/{repo['id']}/groups",
-            json={"group_ids": [group["id"]]},
+            f"/api/v1/admin/repos/{repo['id']}/group",
+            json={"group_id": group["id"]},
         )
         assert updated.status_code == 200
-        assert [g["name"] for g in updated.json()["repo"]["groups"]] == ["研发部"]
+        assert updated.json()["repo"]["group"]["name"] == "研发部"
 
         cleared = client.put(
-            f"/api/v1/admin/repos/{repo['id']}/groups", json={"group_ids": []}
+            f"/api/v1/admin/repos/{repo['id']}/group", json={"group_id": ""}
         )
         assert cleared.status_code == 200
-        assert cleared.json()["repo"]["groups"] == []
+        assert cleared.json()["repo"]["group"] is None
 
         assert client.delete(f"/api/v1/admin/repos/{repo['id']}").status_code == 200
 

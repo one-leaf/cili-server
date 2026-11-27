@@ -33,11 +33,10 @@ def resolve_config(
         "SELECT r.slug AS slug, r.name AS name,"
         "       g.id AS group_id, g.name AS group_name"
         " FROM repos r"
-        " JOIN repo_groups rg ON rg.repo_id = r.id"
-        " JOIN groups g ON g.id = rg.group_id"
+        " JOIN groups g ON g.id = r.group_id"
         " JOIN group_members gm ON gm.group_id = g.id"
         " WHERE gm.person_id = ? AND r.org_id = ?"
-        " ORDER BY r.slug, g.name, g.id",
+        " ORDER BY r.slug",
         (person_id, org_id),
     )
 

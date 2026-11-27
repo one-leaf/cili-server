@@ -97,7 +97,7 @@ def test_config_model_and_workspace_from_repo_groups(tmp_path):
             org_id=str(org["id"]),
             slug="rd-shared",
             name="研发共享",
-            group_ids=[str(group["id"])],
+            group_id=str(group["id"]),
         )
 
         response = client.get("/api/v1/config", headers=_auth(token))
@@ -172,11 +172,11 @@ def test_config_only_includes_repos_of_own_groups(tmp_path):
         other = create_group(conn, org_id=str(org["id"]), name="平台部")
         create_repo(
             conn, git_root=tmp_path / "git", org_id=str(org["id"]),
-            slug="mine", name="我的仓库", group_ids=[str(group["id"])],
+            slug="mine", name="我的仓库", group_id=str(group["id"]),
         )
         create_repo(
             conn, git_root=tmp_path / "git", org_id=str(org["id"]),
-            slug="other", name="别人的仓库", group_ids=[str(other["id"])],
+            slug="other", name="别人的仓库", group_id=str(other["id"]),
         )
         add_group_member(
             conn, group_id=str(other["id"]), person_id=str(person["id"])
@@ -192,22 +192,6 @@ def test_config_only_includes_repos_of_own_groups(tmp_path):
         conn.commit()
         body = client.get("/api/v1/config", headers=_auth(token)).json()
         assert [item["key"] for item in body["workspaces"]] == ["mine"]
-
-
-def test_config_dedupes_repo_shared_by_two_groups(tmp_path):
-    with _client(tmp_path) as (client, conn, org, person, group, token, _):
-        _setup(conn, org)
-        other = create_group(conn, org_id=str(org["id"]), name="平台部")
-        add_group_member(
-            conn, group_id=str(other["id"]), person_id=str(person["id"])
-        )
-        create_repo(
-            conn, git_root=tmp_path / "git", org_id=str(org["id"]),
-            slug="shared", name="共享", group_ids=[str(group["id"]), str(other["id"])],
-        )
-        body = client.get("/api/v1/config", headers=_auth(token)).json()
-        assert len(body["workspaces"]) == 1
-        assert body["workspaces"][0]["key"] == "shared"
 
 
 def test_config_requires_token_and_enabled_person(tmp_path):
