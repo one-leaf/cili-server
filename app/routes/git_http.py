@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import binascii
 import base64
+import logging
 import os
 import subprocess
 import time
@@ -16,6 +17,7 @@ from app.services.identity import authenticate_token
 from app.services.repos import get_repo_by_slug, repo_access, repo_path
 
 router = APIRouter(tags=["git"])
+logger = logging.getLogger(__name__)
 
 MAX_BODY_BYTES = 512 * 1024 * 1024
 GIT_TIMEOUT_SECONDS = 120
@@ -142,12 +144,19 @@ async def _serve(request: Request, repo_name: str, path_info: str, action: str) 
             timeout=GIT_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
+        logger.error("[git] http-backend timeout: %s", slug)
         return Response(status_code=504, content=b"git backend timeout")
-    except OSError:
+    except OSError as exc:
+        logger.error("[git] http-backend unavailable: %s", exc)
         return Response(status_code=500, content=b"git backend unavailable")
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
     if completed.returncode != 0:
+        logger.warning(
+            "[git] http-backend failed (%s): %s",
+            slug,
+            completed.stderr.decode("utf-8", "replace")[:1000],
+        )
         _audit_git(request, device, repo, "git_error", 500, len(completed.stderr), elapsed_ms)
         return Response(status_code=500, content=b"git backend error")
 
