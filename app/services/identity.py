@@ -214,12 +214,6 @@ def delete_person(conn: sqlite3.Connection, person_id: str) -> bool:
     if person is None:
         return False
     org_id = str(person["org_id"])
-    # bundle_bindings.target_id 是多态字段，没有外键可级联。
-    conn.execute(
-        "DELETE FROM bundle_bindings"
-        " WHERE target_type = 'person' AND target_id = ?",
-        (person_id,),
-    )
     conn.execute("DELETE FROM people WHERE id = ?", (person_id,))
     bump_config_version(conn, org_id)
     return True

@@ -92,7 +92,7 @@ async def _serve(request: Request, repo_name: str, path_info: str, action: str) 
     if repo is None or str(repo["org_id"]) != device.org_id:
         return Response(status_code=404, content=b"not found")
 
-    # 授权由配置包绑定推导：配置包含该工作区的群组成员一律读写
+    # 授权来自仓库的群组绑定：绑定群组的成员一律读写
     access = repo_access(
         request.app.state.conn, person_id=device.person_id, repo_id=str(repo["id"])
     )

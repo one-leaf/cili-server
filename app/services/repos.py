@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import shutil
@@ -11,7 +10,8 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
-from typing import Iterator
+
+from app.services.identity import bump_config_version
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
@@ -90,6 +90,7 @@ def create_repo(
     org_id: str,
     slug: str,
     name: str,
+    group_ids: list[str] | None = None,
     now: int | None = None,
 ) -> sqlite3.Row:
     slug = str(slug or "").strip()
@@ -99,6 +100,12 @@ def create_repo(
     ).fetchone()
     if org is None:
         raise ValueError("组织不存在")
+    for group_id in group_ids or []:
+        group = conn.execute(
+            "SELECT org_id FROM groups WHERE id = ?", (group_id,)
+        ).fetchone()
+        if group is None or str(group["org_id"]) != str(org_id):
+            raise ValueError("授权群组不存在或不属于同一组织")
     _init_bare_repo(path)
     repo_id = "repo_" + uuid.uuid4().hex[:12]
     try:
@@ -110,11 +117,18 @@ def create_repo(
                 int(now if now is not None else time.time()),
             ),
         )
+        for group_id in group_ids or []:
+            conn.execute(
+                "INSERT OR IGNORE INTO repo_groups (repo_id, group_id)"
+                " VALUES (?, ?)",
+                (repo_id, group_id),
+            )
         conn.commit()
     except BaseException:
         conn.rollback()
         shutil.rmtree(path, ignore_errors=True)
         raise
+    bump_config_version(conn, org_id)
     return get_repo(conn, repo_id)
 
 
@@ -132,6 +146,7 @@ def update_repo(
             "UPDATE repos SET name = ? WHERE id = ?", (str(name), repo_id)
         )
         conn.commit()
+        bump_config_version(conn, str(repo["org_id"]))
     return get_repo(conn, repo_id)
 
 
@@ -161,74 +176,60 @@ def delete_repo(
     conn.commit()
     path = repo_path(git_root, str(repo["slug"]))
     shutil.rmtree(path, ignore_errors=True)
+    bump_config_version(conn, str(repo["org_id"]))
     return True
 
 
-def _bundle_workspaces_for_person(
-    conn: sqlite3.Connection, *, person_id: str, org_id: str
-) -> Iterator[list]:
-    rows = conn.execute(
-        "SELECT b.workspaces_json FROM bundle_bindings bb"
-        " JOIN bundles b ON b.id = bb.bundle_id"
-        " JOIN group_members gm ON gm.group_id = bb.target_id"
-        " WHERE bb.target_type = 'group' AND gm.person_id = ?"
-        "   AND b.org_id = ?",
-        (person_id, org_id),
-    )
-    for row in rows:
-        try:
-            entries = json.loads(row["workspaces_json"] or "[]")
-        except (TypeError, ValueError):
+def set_repo_groups(
+    conn: sqlite3.Connection, *, repo_id: str, group_ids: list[str]
+) -> sqlite3.Row:
+    """覆盖仓库的授权群组（读写）。"""
+    repo = get_repo(conn, repo_id)
+    if repo is None:
+        raise ValueError("仓库不存在")
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for group_id in group_ids or []:
+        group_id = str(group_id)
+        if group_id in seen:
             continue
-        if isinstance(entries, list):
-            yield entries
+        group = conn.execute(
+            "SELECT org_id FROM groups WHERE id = ?", (group_id,)
+        ).fetchone()
+        if group is None or str(group["org_id"]) != str(repo["org_id"]):
+            raise ValueError("授权群组不存在或不属于同一组织")
+        seen.add(group_id)
+        ordered.append(group_id)
+    conn.execute("DELETE FROM repo_groups WHERE repo_id = ?", (repo_id,))
+    for group_id in ordered:
+        conn.execute(
+            "INSERT OR IGNORE INTO repo_groups (repo_id, group_id)"
+            " VALUES (?, ?)",
+            (repo_id, group_id),
+        )
+    conn.commit()
+    bump_config_version(conn, str(repo["org_id"]))
+    return get_repo(conn, repo_id)
 
 
 def repo_groups(conn: sqlite3.Connection, repo_id: str) -> list[dict]:
-    """仓库当前对哪些群组开放（由配置包绑定推导，只读展示）。"""
-    repo = get_repo(conn, repo_id)
-    if repo is None:
-        return []
-    slug = str(repo["slug"])
     rows = conn.execute(
-        "SELECT DISTINCT g.id, g.name, b.workspaces_json FROM groups g"
-        " JOIN bundle_bindings bb"
-        "   ON bb.target_type = 'group' AND bb.target_id = g.id"
-        " JOIN bundles b ON b.id = bb.bundle_id"
-        " WHERE b.org_id = ?",
-        (str(repo["org_id"]),),
+        "SELECT g.id, g.name FROM repo_groups rg"
+        " JOIN groups g ON g.id = rg.group_id"
+        " WHERE rg.repo_id = ? ORDER BY g.name, g.id",
+        (repo_id,),
     )
-    granted: dict[str, str] = {}
-    for row in rows:
-        try:
-            entries = json.loads(row["workspaces_json"] or "[]")
-        except (TypeError, ValueError):
-            continue
-        if isinstance(entries, list) and any(
-            isinstance(entry, dict) and str(entry.get("key") or "") == slug
-            for entry in entries
-        ):
-            granted[str(row["id"])] = str(row["name"])
-    return [
-        {"id": group_id, "name": name}
-        for group_id, name in sorted(granted.items(), key=lambda item: item[1])
-    ]
+    return [{"id": str(row["id"]), "name": str(row["name"])} for row in rows]
 
 
 def repo_access(
     conn: sqlite3.Connection, *, person_id: str, repo_id: str
 ) -> str | None:
-    """仓库访问权限：属于配置包绑定的群组且配置包含该工作区即读写。"""
-    repo = get_repo(conn, repo_id)
-    if repo is None:
-        return None
-    slug = str(repo["slug"])
-    for entries in _bundle_workspaces_for_person(
-        conn, person_id=person_id, org_id=str(repo["org_id"])
-    ):
-        if any(
-            isinstance(entry, dict) and str(entry.get("key") or "") == slug
-            for entry in entries
-        ):
-            return "write"
-    return None
+    """仓库授权：人员在仓库绑定群组内即可读写。"""
+    row = conn.execute(
+        "SELECT 1 FROM repo_groups rg"
+        " JOIN group_members gm ON gm.group_id = rg.group_id"
+        " WHERE rg.repo_id = ? AND gm.person_id = ? LIMIT 1",
+        (repo_id, person_id),
+    ).fetchone()
+    return "write" if row is not None else None

@@ -6,7 +6,7 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
 from app.errors import ApiError
-from app.services.bundles import resolve_config
+from app.services.delivery import resolve_config
 from app.services.identity import (
     authenticate_token,
     get_org,
@@ -52,7 +52,7 @@ async def get_config(request: Request):
         raise ApiError(
             409,
             "org_model_not_configured",
-            message="尚未为该人员下发模型配置，请先在配置包中配置模型并绑定",
+            message="尚未配置组织模型，请先在「设置 → 模型设置」中配置",
         )
     etag = f'"{payload["version"]}"'
     if _normalize_etag(request.headers.get("if-none-match", "")) == payload["version"]:

@@ -1,4 +1,4 @@
-"""管理端：登录、人员/群组/配置包/设备管理。"""
+"""管理端：登录、人员/群组/模型设置/仓库/设备管理。"""
 
 from __future__ import annotations
 
@@ -30,16 +30,6 @@ from app.services.admin_auth import (
     create_admin_session,
     revoke_admin_session,
 )
-from app.services.bundles import (
-    bind_bundle,
-    create_bundle,
-    delete_bundle,
-    get_bundle,
-    list_bindings,
-    list_bundles,
-    unbind_bundle,
-    update_bundle,
-)
 from app.services.groups import (
     add_group_member,
     create_group,
@@ -60,12 +50,17 @@ from app.services.identity import (
     update_org,
     update_person,
 )
+from app.services.model_config import (
+    get_org_model,
+    update_org_model,
+)
 from app.services.repos import (
     create_repo,
     delete_repo,
     get_repo,
     list_repos,
     repo_groups,
+    set_repo_groups,
     update_repo,
 )
 
@@ -182,6 +177,8 @@ def _apply_restore(conn: sqlite3.Connection, path: Path) -> None:
                     row[1]
                     for row in conn.execute(f"PRAGMA imported.table_info({table})")
                 }
+                if not dest_cols:
+                    continue
                 cols = [col for col in dest_cols if col in src_cols]
                 conn.execute(f"DELETE FROM main.{table}")
                 if cols:
@@ -207,34 +204,6 @@ def _service_call(fn, *args, **kwargs):
         raise ApiError(400, "invalid_request", message=str(exc)) from exc
     except sqlite3.IntegrityError as exc:
         raise ApiError(409, "conflict") from exc
-
-
-def _validate_workspace_repos(conn: sqlite3.Connection, org_id: str, workspaces) -> None:
-    """配置包里的每个共享工作区都必须已有同名仓库（key = 仓库 slug）。"""
-    keys: list[str] = []
-    for item in workspaces or []:
-        key = str((item or {}).get("key") or "").strip()
-        if not key:
-            raise ApiError(400, "invalid_request", message="共享工作区的 key 不能为空")
-        keys.append(key)
-    if not keys:
-        return
-    existing = {
-        str(row["slug"])
-        for row in conn.execute(
-            "SELECT slug FROM repos WHERE org_id = ?", (org_id,)
-        )
-    }
-    missing = [key for key in keys if key not in existing]
-    if missing:
-        raise ApiError(
-            400,
-            "invalid_request",
-            message=(
-                "以下工作区没有对应仓库（请先在仓库页创建）: "
-                + ", ".join(missing)
-            ),
-        )
 
 
 def _require_org(conn: sqlite3.Connection, org_id: str):
@@ -330,40 +299,6 @@ def _group(row) -> dict:
     }
 
 
-def _bundle(row) -> dict:
-    try:
-        model = json.loads(row["model_json"]) if row["model_json"] else None
-    except (TypeError, ValueError):
-        model = None
-    try:
-        workspaces = (
-            json.loads(row["workspaces_json"]) if row["workspaces_json"] else []
-        )
-    except (TypeError, ValueError):
-        workspaces = []
-    return {
-        "id": str(row["id"]),
-        "org_id": str(row["org_id"]),
-        "name": str(row["name"]),
-        "priority": int(row["priority"]),
-        "model": model,
-        "workspaces": workspaces,
-        "is_default": bool(row["is_default"]),
-        "updated_at": _fmt_ts(row["updated_at"]),
-    }
-
-
-def _binding(row) -> dict:
-    return {
-        "id": str(row["id"]),
-        "bundle_id": str(row["bundle_id"]),
-        "bundle_name": str(row["bundle_name"]) if "bundle_name" in row.keys() else "",
-        "target_type": str(row["target_type"]),
-        "target_id": str(row["target_id"]),
-        "priority": int(row["priority"]),
-    }
-
-
 def _repo(row) -> dict:
     return {
         "id": str(row["id"]),
@@ -443,37 +378,23 @@ class GroupMemberRequest(BaseModel):
     person_id: str
 
 
-class BundleCreate(BaseModel):
-    org_id: str
-    name: str = Field(min_length=1, max_length=64)
+class ModelSettingsUpdate(BaseModel):
     model: dict | None = None
-    workspaces: list[dict] | None = None
-    priority: int = 0
-    is_default: bool = False
-
-
-class BundleUpdate(BaseModel):
-    name: str | None = None
-    model: dict | None = None
-    workspaces: list[dict] | None = None
-    priority: int | None = None
-    is_default: bool | None = None
-
-
-class BindRequest(BaseModel):
-    target_type: str
-    target_id: str
-    priority: int = 0
 
 
 class RepoCreate(BaseModel):
     org_id: str
     slug: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=64)
+    group_ids: list[str] = []
 
 
 class RepoUpdate(BaseModel):
     name: str | None = None
+
+
+class RepoGroupsUpdate(BaseModel):
+    group_ids: list[str] = []
 
 
 @router.post("/login")
@@ -846,117 +767,31 @@ async def remove_member_route(
     return {"ok": True}
 
 
-# ── 配置包 ────────────────────────────────────────────
+# ── 模型设置（组织级，所有人共用） ───────────────────
 
 
-@router.get("/bundles")
-async def bundles(org_id: str, request: Request, _admin=Depends(require_admin)):
-    _require_org(_conn(request), org_id)
-    return {"bundles": [_bundle(row) for row in list_bundles(_conn(request), org_id)]}
-
-
-@router.post("/bundles")
-async def create_bundle_route(
-    payload: BundleCreate, request: Request, _admin=Depends(require_admin)
+@router.get("/orgs/{org_id}/model")
+async def get_model_settings(
+    org_id: str, request: Request, _admin=Depends(require_admin)
 ):
-    _check_origin(request)
-    conn = _conn(request)
-    _require_org(conn, payload.org_id)
-    _validate_workspace_repos(conn, payload.org_id, payload.workspaces)
-    row = _service_call(
-        create_bundle, conn,
-        org_id=payload.org_id, name=payload.name, model=payload.model,
-        workspaces=payload.workspaces, priority=payload.priority,
-        is_default=payload.is_default,
-    )
-    _audit(request, _admin, payload.org_id, "bundle_create",
-           target=str(row["id"]), detail=payload.name)
-    return {"bundle": _bundle(row)}
+    org = _require_org(_conn(request), org_id)
+    return {"model": get_org_model(_conn(request), org)}
 
 
-@router.patch("/bundles/{bundle_id}")
-async def update_bundle_route(
-    bundle_id: str, payload: BundleUpdate, request: Request,
+@router.put("/orgs/{org_id}/model")
+async def update_model_settings(
+    org_id: str, payload: ModelSettingsUpdate, request: Request,
     _admin=Depends(require_admin),
 ):
     _check_origin(request)
     conn = _conn(request)
-    existing = get_bundle(conn, bundle_id)
-    if existing is None:
-        raise ApiError(404, "bundle_not_found")
-    if payload.workspaces is not None:
-        _validate_workspace_repos(conn, str(existing["org_id"]), payload.workspaces)
-    row = _service_call(
-        update_bundle, conn, bundle_id,
-        name=payload.name, model=payload.model, workspaces=payload.workspaces,
-        priority=payload.priority, is_default=payload.is_default,
+    _require_org(conn, org_id)
+    model = _service_call(update_org_model, conn, org_id, payload.model)
+    _audit(
+        request, _admin, org_id, "org_model_update", target=org_id,
+        detail=",".join(sorted((model or {}).get("models", {}).keys())),
     )
-    _audit(request, _admin, str(row["org_id"]), "bundle_update",
-           target=bundle_id)
-    return {"bundle": _bundle(row)}
-
-
-@router.delete("/bundles/{bundle_id}")
-async def delete_bundle_route(
-    bundle_id: str, request: Request, _admin=Depends(require_admin)
-):
-    _check_origin(request)
-    conn = _conn(request)
-    bundle = conn.execute(
-        "SELECT org_id FROM bundles WHERE id = ?", (bundle_id,)
-    ).fetchone()
-    if bundle is None or not delete_bundle(conn, bundle_id):
-        raise ApiError(404, "bundle_not_found")
-    _audit(request, _admin, str(bundle["org_id"]), "bundle_delete",
-           target=bundle_id)
-    return {"ok": True}
-
-
-@router.get("/bindings")
-async def bindings(org_id: str, request: Request, _admin=Depends(require_admin)):
-    _require_org(_conn(request), org_id)
-    return {
-        "bindings": [_binding(row) for row in list_bindings(_conn(request), org_id)]
-    }
-
-
-@router.post("/bundles/{bundle_id}/bind")
-async def bind_bundle_route(
-    bundle_id: str, payload: BindRequest, request: Request,
-    _admin=Depends(require_admin),
-):
-    _check_origin(request)
-    conn = _conn(request)
-    row = _service_call(
-        bind_bundle, conn,
-        bundle_id=bundle_id, target_type=payload.target_type,
-        target_id=payload.target_id, priority=payload.priority,
-    )
-    bundle = conn.execute(
-        "SELECT org_id FROM bundles WHERE id = ?", (bundle_id,)
-    ).fetchone()
-    _audit(request, _admin, str(bundle["org_id"]) if bundle else "",
-           "bundle_bind", target=str(row["id"]),
-           detail=f"{payload.target_type}:{payload.target_id}")
-    return {"binding": _binding(row)}
-
-
-@router.delete("/bindings/{binding_id}")
-async def unbind_bundle_route(
-    binding_id: str, request: Request, _admin=Depends(require_admin)
-):
-    _check_origin(request)
-    conn = _conn(request)
-    row = conn.execute(
-        "SELECT b.org_id FROM bundle_bindings bb"
-        " JOIN bundles b ON b.id = bb.bundle_id WHERE bb.id = ?",
-        (binding_id,),
-    ).fetchone()
-    if row is None or not unbind_bundle(conn, binding_id):
-        raise ApiError(404, "binding_not_found")
-    _audit(request, _admin, str(row["org_id"]), "bundle_unbind",
-           target=binding_id)
-    return {"ok": True}
+    return {"model": model}
 
 
 # ── 仓库 ──────────────────────────────────────────────
@@ -984,6 +819,7 @@ async def create_repo_route(
         create_repo, _conn(request),
         git_root=request.app.state.settings.git_root,
         org_id=payload.org_id, slug=payload.slug, name=payload.name,
+        group_ids=payload.group_ids,
     )
     _audit(request, _admin, payload.org_id, "repo_create",
            target=str(row["id"]), detail=payload.slug)
@@ -1002,6 +838,25 @@ async def update_repo_route(
     _audit(request, _admin, str(row["org_id"]), "repo_update",
            target=repo_id)
     return {"repo": _repo(row)}
+
+
+@router.put("/repos/{repo_id}/groups")
+async def set_repo_groups_route(
+    repo_id: str, payload: RepoGroupsUpdate, request: Request,
+    _admin=Depends(require_admin),
+):
+    _check_origin(request)
+    conn = _conn(request)
+    row = _service_call(
+        set_repo_groups, conn,
+        repo_id=repo_id, group_ids=payload.group_ids,
+    )
+    groups = repo_groups(conn, repo_id)
+    _audit(
+        request, _admin, str(row["org_id"]), "repo_groups_update",
+        target=repo_id, detail=",".join(group["name"] for group in groups),
+    )
+    return {"repo": {**_repo(row), "groups": groups}}
 
 
 @router.delete("/repos/{repo_id}")

@@ -1,4 +1,4 @@
-"""配置下发：个人/群组包合并、工作区并集、ETag/304。"""
+"""配置下发：组织级共享模型 + 仓库群组对应的工作区、ETag/304。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from fastapi.testclient import TestClient
 
 from app.db import connect, init_schema
 from app.main import create_app
-from app.services.bundles import bind_bundle, create_bundle, update_bundle
 from app.services.groups import add_group_member, create_group
 from app.services.identity import (
     create_device,
@@ -18,20 +17,23 @@ from app.services.identity import (
     update_org,
     update_person,
 )
+from app.services.model_config import update_org_model
+from app.services.repos import create_repo
 from app.settings import Settings, SmsConfig, VerificationConfig
 from app.sms.mock import MockSmsProvider
 
 
-def _settings() -> Settings:
+def _settings(git_root: str) -> Settings:
     return Settings(
         sms=SmsConfig(provider="mock"),
         verification=VerificationConfig(code_pepper="test"),
         database_path=":memory:",
+        git_root=git_root,
     )
 
 
 @contextmanager
-def _client():
+def _client(tmp_path):
     conn = connect(":memory:")
     init_schema(conn)
     org = create_org(conn, name="Acme", slug="acme")
@@ -49,10 +51,14 @@ def _client():
         person_id=str(person["id"]),
         name="测试设备",
     )
-    app = create_app(settings=_settings(), conn=conn, provider=MockSmsProvider())
+    app = create_app(
+        settings=_settings(str(tmp_path / "git")),
+        conn=conn,
+        provider=MockSmsProvider(),
+    )
     try:
         with TestClient(app) as client:
-            yield client, conn, org, person, group, token
+            yield client, conn, org, person, group, token, tmp_path
     finally:
         conn.close()
 
@@ -61,141 +67,78 @@ def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_config_merges_personal_model_and_group_workspaces():
-    with _client() as (client, conn, org, person, group, token):
-        personal = create_bundle(
+def _model() -> dict:
+    return {
+        "label": "组织模型",
+        "protocol": "openai",
+        "base_url": "https://llm.example/v1",
+        "models": {
+            "main": {
+                "name": "m1",
+                "max_context_tokens": 200000,
+                "max_output_tokens": 32768,
+                "input": ["text", "image"],
+            }
+        },
+    }
+
+
+def _setup(conn, org) -> None:
+    update_org_model(conn, str(org["id"]), _model())
+    update_org(conn, str(org["id"]), web_url="https://cili.example.com")
+
+
+def test_config_model_and_workspace_from_repo_groups(tmp_path):
+    with _client(tmp_path) as (client, conn, org, _person, group, token, _):
+        _setup(conn, org)
+        create_repo(
             conn,
+            git_root=tmp_path / "git",
             org_id=str(org["id"]),
-            name="张三个人",
-            model={"label": "personal", "models": {"main": {"name": "m1"}}},
-            workspaces=[{"key": "personal-only", "name": "个人"}],
-            priority=10,
-        )
-        bind_bundle(
-            conn, bundle_id=str(personal["id"]), target_type="person",
-            target_id=str(person["id"]), priority=10,
-        )
-        shared = create_bundle(
-            conn,
-            org_id=str(org["id"]),
+            slug="rd-shared",
             name="研发共享",
-            model={"label": "group", "models": {"main": {"name": "m1"}}},
-            workspaces=[{"key": "rd-shared", "name": "研发部共享工作区"}],
-            priority=5,
-        )
-        bind_bundle(
-            conn, bundle_id=str(shared["id"]), target_type="group",
-            target_id=str(group["id"]), priority=5,
-        )
-        create_bundle(
-            conn, org_id=str(org["id"]), name="默认",
-            model={"label": "default", "models": {"main": {"name": "m1"}}}, is_default=True,
+            group_ids=[str(group["id"])],
         )
 
         response = client.get("/api/v1/config", headers=_auth(token))
         assert response.status_code == 200
         body = response.json()
-        assert body["org"]["id"] == org["slug"]
+        assert body["org"]["id"] == "acme"
+        assert body["org"]["web_url"] == "https://cili.example.com"
         assert body["user"]["name"] == "张三"
         assert body["user"]["groups"] == ["研发部"]
-        assert body["model"]["label"] == "personal"
-        assert [ws["key"] for ws in body["workspaces"]] == ["rd-shared"]
-        assert body["workspaces"][0]["group_name"] == "研发部"
-        assert "personal-only" not in [ws["key"] for ws in body["workspaces"]]
-        assert body["version"] == response.headers["etag"].strip('"')
 
+        model = body["model"]
+        assert model["provider_key"] == "org-acme"
+        assert model["protocol"] == "openai"
+        assert model["models"]["main"]["name"] == "m1"
+        assert "api_key" not in model
+
+        workspace = body["workspaces"][0]
+        assert workspace["key"] == "rd-shared"
+        assert workspace["name"] == "研发共享"
+        assert workspace["group_name"] == "研发部"
+        assert workspace["memory_enabled"] is True
+        git = workspace["git"]
+        assert git["remote_url"] == "https://cili.example.com/git/rd-shared.git"
+        assert git["branch"] == "main"
+        assert git["username"] == "张三"
+        assert git["password"] == token
+        assert git["sync_mode"] == "remote_wins"
+
+        assert body["version"] == response.headers["etag"].strip('"')
         again = client.get(
             "/api/v1/config",
             headers={**_auth(token), "If-None-Match": response.headers["etag"]},
         )
         assert again.status_code == 304
-        assert again.content == b""
 
 
-def test_group_workspace_conflict_uses_priority():
-    with _client() as (client, conn, org, person, group, token):
-        group2 = create_group(conn, org_id=str(org["id"]), name="平台部")
-        add_group_member(conn, group_id=str(group2["id"]), person_id=str(person["id"]))
-
-        low = create_bundle(
-            conn, org_id=str(org["id"]), name="低",
-            workspaces=[{"key": "shared", "name": "低优先级"}],
-        )
-        bind_bundle(conn, bundle_id=str(low["id"]), target_type="group",
-                    target_id=str(group["id"]), priority=1)
-        high = create_bundle(
-            conn, org_id=str(org["id"]), name="高",
-            model={"label": "m", "models": {"main": {"name": "m1"}}},
-            workspaces=[{"key": "shared", "name": "高优先级"}],
-        )
-        bind_bundle(conn, bundle_id=str(high["id"]), target_type="group",
-                    target_id=str(group2["id"]), priority=2)
-
-        body = client.get("/api/v1/config", headers=_auth(token)).json()
-        assert len(body["workspaces"]) == 1
-        assert body["workspaces"][0]["name"] == "高优先级"
-
-
-def test_default_bundle_provides_model_only():
-    with _client() as (client, conn, org, _person, _group, token):
-        create_bundle(
-            conn, org_id=str(org["id"]), name="默认",
-            model={"label": "default", "models": {"main": {"name": "m1"}}},
-            workspaces=[{"key": "ignored", "name": "默认工作区"}],
-            is_default=True,
-        )
-        body = client.get("/api/v1/config", headers=_auth(token)).json()
-        assert body["model"]["label"] == "default"
-        assert body["workspaces"] == []
-
-
-def test_config_requires_token_and_enabled_person():
-    with _client() as (client, conn, org, person, _group, token):
-        assert client.get("/api/v1/config").status_code == 401
-
-        conn.execute("UPDATE people SET enabled = 0 WHERE id = ?", (person["id"],))
-        conn.commit()
-        response = client.get("/api/v1/config", headers=_auth(token))
-        assert response.status_code == 403
-        assert response.json()["error"] == "person_disabled"
-
-
-def test_config_includes_org_web_url_and_bumps_version():
-    with _client() as (client, conn, org, _person, _group, token):
-        create_bundle(
-            conn, org_id=str(org["id"]), name="组织模型",
-            model={"label": "org", "models": {"main": {"name": "m1"}}},
-            is_default=True,
-        )
+def test_config_injects_person_model_api_key(tmp_path):
+    with _client(tmp_path) as (client, conn, org, person, _group, token, _):
+        _setup(conn, org)
         first = client.get("/api/v1/config", headers=_auth(token))
-        assert first.json()["org"]["web_url"] == ""
-
-        update_org(conn, str(org["id"]), web_url="https://cili.example.com")
-
-        second = client.get(
-            "/api/v1/config",
-            headers={
-                **_auth(token),
-                "If-None-Match": f'"{first.json()["version"]}"',
-            },
-        )
-        assert second.status_code == 200
-        assert second.json()["org"]["web_url"] == "https://cili.example.com"
-        assert second.json()["version"] != first.json()["version"]
-
-
-def test_config_injects_person_model_api_key():
-    with _client() as (client, conn, org, person, _group, token):
-        create_bundle(
-            conn, org_id=str(org["id"]), name="组织模型",
-            model={"label": "org", "models": {"main": {"name": "m1"}}}, is_default=True,
-        )
-        first = client.get("/api/v1/config", headers=_auth(token))
-        model = first.json()["model"]
-        assert model["label"] == "org"
-        assert model["provider_key"] == "org-acme"
-        assert "api_key" not in model
-        assert "model_api_key" not in first.json()["user"]
+        assert "api_key" not in first.json()["model"]
 
         # updated_at 是秒级；用明确的后续时间戳，避免同一秒内版本号不变。
         update_person(
@@ -204,7 +147,6 @@ def test_config_injects_person_model_api_key():
             model_api_key="sk-test-123",
             now=int(time.time()) + 5,
         )
-
         second = client.get(
             "/api/v1/config",
             headers={
@@ -217,60 +159,64 @@ def test_config_injects_person_model_api_key():
         assert second.json()["version"] != first.json()["version"]
 
 
-def test_config_injects_workspace_git_block():
-    with _client() as (client, conn, org, _person, group, token):
-        update_org(conn, str(org["id"]), web_url="https://cili.example.com")
-        bundle = create_bundle(
-            conn,
-            org_id=str(org["id"]),
-            name="共享",
-            model={"label": "m", "models": {"main": {"name": "m1"}}},
-            workspaces=[
-                {"key": "rd-shared", "name": "研发共享", "memory_enabled": True}
-            ],
-        )
-        bind_bundle(
-            conn, bundle_id=str(bundle["id"]), target_type="group",
-            target_id=str(group["id"]),
-        )
-
-        body = client.get("/api/v1/config", headers=_auth(token)).json()
-        workspace = body["workspaces"][0]
-        assert workspace["key"] == "rd-shared"
-        assert workspace["memory_enabled"] is True
-        git = workspace["git"]
-        assert git["remote_url"] == "https://cili.example.com/git/rd-shared.git"
-        assert git["branch"] == "main"
-        assert git["username"] == "张三"
-        assert git["password"] == token
-        assert git["sync_mode"] == "remote_wins"
-
-
-def test_config_requires_model_configuration():
-    with _client() as (client, _conn, _org, _person, _group, token):
+def test_config_requires_model_configuration(tmp_path):
+    with _client(tmp_path) as (client, _conn, _org, _person, _group, token, _):
         response = client.get("/api/v1/config", headers=_auth(token))
         assert response.status_code == 409
         assert response.json()["error"] == "org_model_not_configured"
 
 
-def test_version_changes_when_bundle_changes():
-    with _client() as (client, conn, org, _person, _group, token):
-        create_bundle(
-            conn, org_id=str(org["id"]), name="基础",
-            model={"label": "base", "models": {"main": {"name": "m1"}}},
-            is_default=True,
+def test_config_only_includes_repos_of_own_groups(tmp_path):
+    with _client(tmp_path) as (client, conn, org, person, group, token, _):
+        _setup(conn, org)
+        other = create_group(conn, org_id=str(org["id"]), name="平台部")
+        create_repo(
+            conn, git_root=tmp_path / "git", org_id=str(org["id"]),
+            slug="mine", name="我的仓库", group_ids=[str(group["id"])],
         )
-        first = client.get("/api/v1/config", headers=_auth(token))
-        version = first.json()["version"]
+        create_repo(
+            conn, git_root=tmp_path / "git", org_id=str(org["id"]),
+            slug="other", name="别人的仓库", group_ids=[str(other["id"])],
+        )
+        add_group_member(
+            conn, group_id=str(other["id"]), person_id=str(person["id"])
+        )
 
-        bundle = create_bundle(
-            conn, org_id=str(org["id"]), name="新包", model={"label": "new", "models": {"main": {"name": "m1"}}}
-        )
-        update_bundle(conn, str(bundle["id"]), model={"label": "updated", "models": {"main": {"name": "m1"}}})
+        body = client.get("/api/v1/config", headers=_auth(token)).json()
+        assert [item["key"] for item in body["workspaces"]] == ["mine", "other"]
 
-        second = client.get(
-            "/api/v1/config",
-            headers={**_auth(token), "If-None-Match": f'"{version}"'},
+        conn.execute(
+            "DELETE FROM group_members WHERE group_id = ? AND person_id = ?",
+            (str(other["id"]), str(person["id"])),
         )
-        assert second.status_code == 200
-        assert second.json()["version"] != version
+        conn.commit()
+        body = client.get("/api/v1/config", headers=_auth(token)).json()
+        assert [item["key"] for item in body["workspaces"]] == ["mine"]
+
+
+def test_config_dedupes_repo_shared_by_two_groups(tmp_path):
+    with _client(tmp_path) as (client, conn, org, person, group, token, _):
+        _setup(conn, org)
+        other = create_group(conn, org_id=str(org["id"]), name="平台部")
+        add_group_member(
+            conn, group_id=str(other["id"]), person_id=str(person["id"])
+        )
+        create_repo(
+            conn, git_root=tmp_path / "git", org_id=str(org["id"]),
+            slug="shared", name="共享", group_ids=[str(group["id"]), str(other["id"])],
+        )
+        body = client.get("/api/v1/config", headers=_auth(token)).json()
+        assert len(body["workspaces"]) == 1
+        assert body["workspaces"][0]["key"] == "shared"
+
+
+def test_config_requires_token_and_enabled_person(tmp_path):
+    with _client(tmp_path) as (client, conn, org, person, _group, token, _):
+        _setup(conn, org)
+        assert client.get("/api/v1/config").status_code == 401
+
+        conn.execute("UPDATE people SET enabled = 0 WHERE id = ?", (person["id"],))
+        conn.commit()
+        response = client.get("/api/v1/config", headers=_auth(token))
+        assert response.status_code == 403
+        assert response.json()["error"] == "person_disabled"

@@ -120,33 +120,33 @@ uvicorn app.main:app --host 127.0.0.1 --port 7681
 - `POST /api/v1/auth/sms/verify`：body `{org_id, phone, code, device_name}`；校验通过后签发 30 天滑动设备令牌，返回 `{token, expires_at, org, user, config_version}`，其中 `org.id` 为 slug，`user.groups` 为群组名列表。
 - `GET /api/v1/auth/me`：`Authorization: Bearer <token>`，校验令牌并滑动续期。
 - `POST /api/v1/auth/logout`：`Authorization: Bearer <token>`，吊销令牌。
-- `GET /api/v1/config`：`Authorization: Bearer <token>`；`org` 含 `id`（slug）、`name`、`web_url`，`user` 含本人的 `groups`；`model` 会在配置包的模型配置上注入 `provider_key`（固定 `org-<slug>`）和该人员的 `api_key`；`workspaces[].git` 会补齐 `remote_url`（缺省用 `web_url` + `/git/<key>.git` 拼接）、`branch`、`username`（人员中文名）、`password`（当前设备令牌）、`sync_mode`（默认 `remote_wins`）。支持 `If-None-Match`（ETag = 组织 config_version + 人员 updated_at），命中返回 304。若该人员没有可用的模型配置，返回 409 `org_model_not_configured`（客户端需要 model 才能应用配置）。
+- `GET /api/v1/config`：`Authorization: Bearer <token>`；`org` 含 `id`（slug）、`name`、`web_url`，`user` 含本人的 `groups`；`model` 来自组织级模型设置，注入 `provider_key`（固定 `org-<slug>`）和该人员的 `api_key`；`workspaces` 是人员所在群组绑定的仓库，`git` 块补齐 `remote_url`（`web_url` + `/git/<slug>.git`）、`branch`、`username`（人员中文名）、`password`（当前设备令牌）、`sync_mode`（`remote_wins`）。支持 `If-None-Match`（ETag = 组织 config_version + 人员 updated_at），命中返回 304。组织未配置模型时返回 409 `org_model_not_configured`。
 - 错误统一为 `{"error": "<code>", "detail": "<说明>"}`；限流额外带 `retry_after`。
 
 设备令牌只在 verify 响应中出现一次；数据库只存 SHA-256 哈希，30 天有效，每次 `/me` 或配置拉取时续期。
 
-配置包解析（`app/services/bundles.py`）：
+配置下发规则（`app/services/delivery.py`）：
 
-- 模型：个人包 > 群组包（按绑定/包优先级）> 默认包，第一个有 `model_json` 的胜出；
-- 工作区：只来自群组包，按 `key` 并集，同 key 高优先级覆盖，再按 `group_id` 排序；保存配置包时要求每个工作区 `key` 都有同 slug 的仓库（没有则 400，提示先在仓库页创建）；
-- 群组成员变化、Bundle 创建/更新/绑定都会推进组织 `config_version`。
+- 模型：组织级一套，所有人员共用；API Key 按人员（`people.model_api_key`）注入；
+- 工作区：仓库在仓库页绑定群组；人员属于哪个群组，就下发该群组绑定的仓库（同一仓库被多个群组绑定时只出现一次）；
+- 仓库创建/改名/删除、仓库群组变更、人员与群组变更都会推进组织 `config_version`。
 
-管理端页面：`http://<host>:7681/admin`（登录后可管理人员/群组/配置包/仓库/设备/审计）。
+管理端页面：`http://<host>:7681/admin`（登录后可管理人员/群组/模型设置/仓库/设备/审计）。
 
-配置包的模型与共享工作区都用表单维护，不需要手写 JSON：模型支持提供商名称、协议（anthropic / openai / openai-responses）、认证方式、服务商预设、Base URL、API 路径、Headers，以及多个模型条目（别名、API 模型 ID、上下文、最大输出、类型、输入模态、思考档位、缓存策略）；服务端会校验字段（如至少一个模型、上下文/最大输出为正整数、模态必须含 text）。角色绑定不下发，由客户端自行选择。`api_key` 仍按人员下发，不在模型配置里填。
+「设置 → 模型设置」维护组织共享模型：提供商名称、协议（anthropic / openai / openai-responses）、认证方式、服务商预设、Base URL、API 路径、Headers，以及多个模型条目（别名、API 模型 ID、上下文、最大输出、类型、输入模态、思考档位、缓存策略）；服务端校验字段（至少一个模型、上下文/最大输出为正整数、模态必须含 text），不下发角色绑定。`api_key` 仍按人员下发，不在模型设置里填。
 
 管理端 API（`/api/v1/admin/*`，Cookie 会话，12 小时过期）：
 
 - `POST /login` / `POST /logout` / `GET /me`
 - `GET /orgs`、`PATCH /orgs/{id}`：修改企业名称和对外 Web 地址（两者都会随 `/api/v1/config` 下发并推进 config_version）
 - `GET/PUT/DELETE /orgs/{id}/sms`：组织级腾讯云短信配置（SecretId/SecretKey/SdkAppId/签名/模板/Region），保存后即时生效；响应只返回 SecretId 掩码与 `has_secret_key`，不返回密钥明文
-- `GET /backup`：下载 SQLite 在线快照（`.db`，含组织/人员/配置包/设备/审计与短信密钥，请妥善保管）；`POST /restore`：上传 `.db` 覆盖当前数据库，恢复前自动备份到 `data/db/backups/`，即时生效（设备与会话以备份为准，恢复后需重新登录）
+- `GET /backup`：下载 SQLite 在线快照（`.db`，含组织/人员/仓库授权/设备/审计与短信密钥，请妥善保管）；`POST /restore`：上传 `.db` 覆盖当前数据库，恢复前自动备份到 `data/db/backups/`，即时生效（设备与会话以备份为准，恢复后需重新登录）
 - `GET/POST /people`、`PATCH/DELETE /people/{id}`
 - `GET/POST /groups`、`PATCH/DELETE /groups/{id}`、成员增删
-- `GET/POST /bundles`、`PATCH/DELETE /bundles/{id}`、`POST /bundles/{id}/bind`、`GET /bindings`、`DELETE /bindings/{id}`
+- `GET/PUT /orgs/{id}/model`：组织级共享模型设置（所有人共用；不含人员 Key）
 - `GET /devices`、`POST /devices/{id}/revoke`
-- `GET /audit?org_id=&limit=&before_id=`：管理端审计日志（登录、人员/群组/配置包/设备/仓库变更）
-- `GET/POST /repos`（返回由配置包绑定推导的授权群组）、`DELETE /repos/{id}`；仓库不再单独授权群组，工作区写进配置包并绑定群组即授权。
+- `GET /audit?org_id=&limit=&before_id=`：管理端审计日志（登录、人员/群组/模型设置/设备/仓库变更）
+- `GET/POST /repos`、`PUT /repos/{id}/groups`（设置授权群组）、`DELETE /repos/{id}`；仓库绑定的群组成员获得读写权限并下发对应工作区。
 
 ## Git 网关
 
@@ -160,7 +160,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 7681
 - `POST /git/<slug>.git/git-upload-pack`
 - `POST /git/<slug>.git/git-receive-pack`
 
-校验链：Basic 令牌 → 设备未吊销/未过期 → 人员启用 → 配置包授权（人员所在群组绑定的配置包包含该工作区，key = 仓库 slug）→ `git http-backend`。授权即读写，没有只读模式。
+校验链：Basic 令牌 → 设备未吊销/未过期 → 人员启用 → 仓库群组授权（人员属于仓库绑定的群组）→ `git http-backend`。授权即读写，没有只读模式。
 
 仓库创建时会 `git init --bare` 并写入初始提交（`.gitignore` 含 `.cili/`），同时启用 `http.receivepack`。
 

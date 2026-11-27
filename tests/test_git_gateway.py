@@ -13,7 +13,6 @@ from app.db import connect, init_schema
 from app.main import create_app
 from app.services.groups import add_group_member, create_group
 from app.services.identity import create_device, create_org, create_person
-from app.services.bundles import bind_bundle, create_bundle
 from app.services.repos import create_repo
 from app.settings import Settings, SmsConfig, VerificationConfig
 from app.sms.mock import MockSmsProvider
@@ -48,19 +47,7 @@ def _client(tmp_path):
         org_id=str(org["id"]),
         slug="demo",
         name="Demo",
-    )
-    # 授权来自配置包绑定：工作区 key = 仓库 slug，配置包绑定到群组
-    bundle = create_bundle(
-        conn,
-        org_id=str(org["id"]),
-        name="共享",
-        workspaces=[{"key": "demo", "name": "Demo"}],
-    )
-    bind_bundle(
-        conn,
-        bundle_id=str(bundle["id"]),
-        target_type="group",
-        target_id=str(group["id"]),
+        group_ids=[str(group["id"])],
     )
     settings = Settings(
         sms=SmsConfig(provider="mock"),
@@ -143,9 +130,9 @@ def test_group_member_has_read_write(tmp_path):
         assert upload.status_code == 200
 
 
-def test_repo_without_bundle_binding_is_denied(tmp_path):
+def test_repo_without_group_binding_is_denied(tmp_path):
     with _client(tmp_path) as (client, conn, _org, _person, _group, _repo, token):
-        conn.execute("DELETE FROM bundle_bindings")
+        conn.execute("DELETE FROM repo_groups")
         conn.commit()
         response = client.get(
             "/git/demo.git/info/refs?service=git-upload-pack",

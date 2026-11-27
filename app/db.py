@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS organizations (
     web_url TEXT NOT NULL DEFAULT '',
     sms_provider TEXT NOT NULL DEFAULT '',
     sms_config TEXT NOT NULL DEFAULT '{}',
-    model_defaults TEXT NOT NULL DEFAULT '{}'
+    model_config TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS people (
@@ -51,29 +51,6 @@ CREATE TABLE IF NOT EXISTS group_members (
 CREATE INDEX IF NOT EXISTS idx_group_members_person
     ON group_members(person_id);
 
-CREATE TABLE IF NOT EXISTS bundles (
-    id TEXT PRIMARY KEY,
-    org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    priority INTEGER NOT NULL DEFAULT 0,
-    model_json TEXT NOT NULL DEFAULT '',
-    workspaces_json TEXT NOT NULL DEFAULT '[]',
-    is_default INTEGER NOT NULL DEFAULT 0,
-    updated_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_bundles_org ON bundles(org_id);
-
-CREATE TABLE IF NOT EXISTS bundle_bindings (
-    id TEXT PRIMARY KEY,
-    bundle_id TEXT NOT NULL REFERENCES bundles(id) ON DELETE CASCADE,
-    target_type TEXT NOT NULL CHECK(target_type IN ('group', 'person')),
-    target_id TEXT NOT NULL,
-    priority INTEGER NOT NULL DEFAULT 0,
-    UNIQUE(bundle_id, target_type, target_id)
-);
-CREATE INDEX IF NOT EXISTS idx_bundle_bindings_target
-    ON bundle_bindings(target_type, target_id);
-
 CREATE TABLE IF NOT EXISTS devices (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -98,6 +75,14 @@ CREATE TABLE IF NOT EXISTS repos (
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_repos_org ON repos(org_id);
+
+CREATE TABLE IF NOT EXISTS repo_groups (
+    repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    PRIMARY KEY(repo_id, group_id)
+);
+CREATE INDEX IF NOT EXISTS idx_repo_groups_group
+    ON repo_groups(group_id);
 
 
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -175,6 +160,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     # 兼容上一版已经创建的库：补 org_id 列。
     _ensure_column(conn, "organizations", "web_url", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "organizations", "model_config", "TEXT NOT NULL DEFAULT '{}'")
     _ensure_column(conn, "people", "model_api_key", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "sms_codes", "org_id", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "sms_send_events", "org_id", "TEXT NOT NULL DEFAULT ''")

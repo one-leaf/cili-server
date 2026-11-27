@@ -70,12 +70,6 @@ def delete_group(conn: sqlite3.Connection, group_id: str) -> bool:
     group = get_group(conn, group_id)
     if group is None:
         return False
-    # bundle_bindings.target_id 是多态字段，没有外键可级联。
-    conn.execute(
-        "DELETE FROM bundle_bindings"
-        " WHERE target_type = 'group' AND target_id = ?",
-        (group_id,),
-    )
     conn.execute("DELETE FROM groups WHERE id = ?", (group_id,))
     bump_config_version(conn, str(group["org_id"]))
     return True
