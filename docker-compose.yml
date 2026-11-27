@@ -1,0 +1,26 @@
+services:
+  cili-server:
+    build: .
+    image: cili-server:latest
+    container_name: cili-server
+    restart: unless-stopped
+    ports:
+      - "7681:7681"
+    volumes:
+      # 宿主机 data 目录即全部运行状态：config/config.json、db、logs、workspaces
+      # 首次启动前：mkdir -p data/config && cp config.example.json data/config/config.json
+      - ./data:/app/data
+    # 首次启动创建管理员（也可以写进 data/config/config.json 的 admin 段）
+    # environment:
+    #   CILI_ADMIN_USERNAME: admin
+    #   CILI_ADMIN_PASSWORD: change-me-123
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7681/api/v1/health')"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
