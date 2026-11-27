@@ -21,6 +21,7 @@ from app.routes.config import router as config_router
 from app.routes.git_http import router as git_router
 from app.routes.public import router as public_router
 from app.services.admin_auth import seed_initial_admin
+from app.services.repos import ensure_shared_gitignores
 from app.settings import Settings, load_settings
 from app.sms.registry import SmsProviderResolver
 from app.sms.base import (
@@ -84,6 +85,12 @@ def create_app(
         db_conn = conn or connect(cfg.database_path)
         init_schema(db_conn)
         seed_initial_admin(db_conn, cfg.admin)
+        try:
+            updated = ensure_shared_gitignores(db_conn, cfg.git_root)
+            if updated:
+                logger.info("[git] 已更新共享仓库 .gitignore: %s", ", ".join(updated))
+        except Exception:  # noqa: BLE001
+            logger.warning("[git] 更新共享仓库 .gitignore 失败", exc_info=True)
 
         if provider is not None:
             sms_resolver = None

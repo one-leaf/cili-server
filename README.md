@@ -163,7 +163,9 @@ uvicorn app.main:app --host 127.0.0.1 --port 7681
 
 校验链：Basic 令牌 → 设备未吊销/未过期 → 人员启用 → 仓库群组授权（人员属于仓库所属群组）→ `git http-backend`。授权即读写，没有只读模式。
 
-仓库创建时会 `git init --bare` 并写入初始提交（`.gitignore` 含 `.cili/`），同时启用 `http.receivepack`。
+仓库创建时会 `git init --bare` 并写入初始提交（`.gitignore` 为空，即 **`.cili/` 也会参与同步**），同时启用 `http.receivepack`。
+
+共享工作区的 `.cili/`（会话、记忆、MCP 配置、工具数据）默认全部纳入 Git；服务启动时会把已有仓库里的 `.cili` 忽略规则移除并提交一次。注意远程权威模式下多人同时写会话/记忆会被远程覆盖，且这些数据对同群组成员可见。
 
 管理端变更需要同源（`Origin`/`Referer` 与 Host 一致）；没有 Origin 的脚本/curl 请求放行。
 

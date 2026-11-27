@@ -63,6 +63,24 @@ def _client(tmp_path):
         conn.close()
 
 
+def test_initial_gitignore_does_not_exclude_cili(tmp_path):
+    import subprocess
+
+    with _client(tmp_path):
+        repo = tmp_path / "git" / "demo.git"
+        result = subprocess.run(
+            ["git", "--git-dir", str(repo), "cat-file", "blob", "HEAD:.gitignore"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0
+        # 会话/记忆/MCP/workflow 都同步，仅 tmp 与本地敏感词保留
+        assert ".cili/tmp/" in result.stdout
+        assert ".cili/sensitive_words.json" in result.stdout
+        assert "!.cili/" not in result.stdout
+
+
 def test_info_refs_requires_basic_auth(tmp_path):
     with _client(tmp_path) as (client, _conn, _org, _person, _group, _repo, _token):
         response = client.get("/git/demo.git/info/refs?service=git-upload-pack")

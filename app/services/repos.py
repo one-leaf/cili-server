@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
@@ -12,6 +13,8 @@ import uuid
 from pathlib import Path
 
 from app.services.identity import bump_config_version
+
+logger = logging.getLogger(__name__)
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
@@ -43,13 +46,13 @@ def _run_git(args: list[str], *, cwd: str | Path | None = None,
     return result.stdout
 
 
-def _init_bare_repo(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        raise ValueError("仓库目录已存在")
-    _run_git(["init", "--bare", str(path)])
-    _run_git(["--git-dir", str(path), "config", "http.receivepack", "true"])
+# 共享工作区里 .cili 默认全部同步（会话/记忆/MCP/workflow），
+# 只有临时下载与本地敏感词规则保留在本机。
+_CILI_IGNORE_PREFIXES = (".cili/", "!.cili/")
+_SHARED_GITIGNORE_RULES = (".cili/tmp/", ".cili/sensitive_words.json")
 
+
+def _identity_env() -> dict:
     env = os.environ.copy()
     env.update(
         {
@@ -59,9 +62,103 @@ def _init_bare_repo(path: Path) -> None:
             "GIT_COMMITTER_EMAIL": "cili-server@localhost",
         }
     )
+    return env
+
+
+def _merge_shared_gitignore(existing: str) -> str:
+    raw_lines = existing.splitlines()
+    lines = [
+        line
+        for line in raw_lines
+        if not line.strip().startswith(_CILI_IGNORE_PREFIXES)
+        or line.strip() in _SHARED_GITIGNORE_RULES
+    ]
+    known = {line.strip() for line in lines}
+    for rule in _SHARED_GITIGNORE_RULES:
+        if rule not in known:
+            lines.append(rule)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    desired = "\n".join(lines) + ("\n" if lines else "")
+    return existing if desired == existing else desired
+
+
+def ensure_shared_gitignore(git_root: str | Path, slug: str) -> bool:
+    """把仓库 main 的 .gitignore 调整为「共享 .cili/memory、会话仍本地」。"""
+    path = repo_path(git_root, slug)
+    if not path.is_dir():
+        return False
+    git_dir = ["--git-dir", str(path)]
+    try:
+        head = _run_git([*git_dir, "rev-parse", "--verify", "refs/heads/main"]).strip()
+    except RuntimeError:
+        return False
+    try:
+        existing = _run_git(
+            [*git_dir, "cat-file", "blob", "main:.gitignore"]
+        ).decode("utf-8", "replace")
+    except RuntimeError:
+        existing = ""
+    desired = _merge_shared_gitignore(existing)
+    if desired == existing:
+        return False
+
+    env = _identity_env()
+    blob = _run_git(
+        [*git_dir, "hash-object", "-w", "--stdin"],
+        input_bytes=desired.encode("utf-8"),
+        env=env,
+    ).strip()
+    index_file = path / "cili-migrate.index"
+    index_env = {**env, "GIT_INDEX_FILE": str(index_file)}
+    try:
+        _run_git([*git_dir, "read-tree", "refs/heads/main"], env=index_env)
+        _run_git(
+            [
+                *git_dir, "update-index", "--add", "--cacheinfo",
+                f"100644,{blob.decode()},.gitignore",
+            ],
+            env=index_env,
+        )
+        tree = _run_git([*git_dir, "write-tree"], env=index_env).strip()
+        commit = _run_git(
+            [
+                *git_dir, "commit-tree", tree.decode(), "-p", head.decode(),
+                "-m", "chore: 共享 .cili（会话/记忆/MCP/workflow），保留 tmp 与敏感词本地",
+            ],
+            env=env,
+        ).strip()
+        _run_git(
+            [*git_dir, "update-ref", "refs/heads/main", commit.decode(), head.decode()]
+        )
+    finally:
+        index_file.unlink(missing_ok=True)
+    return True
+
+
+def ensure_shared_gitignores(conn: sqlite3.Connection, git_root: str | Path) -> list[str]:
+    updated: list[str] = []
+    for row in conn.execute("SELECT slug FROM repos"):
+        slug = str(row["slug"])
+        try:
+            if ensure_shared_gitignore(git_root, slug):
+                updated.append(slug)
+        except Exception:  # noqa: BLE001
+            logger.warning("[repos] 更新 %s 的 .gitignore 失败", slug, exc_info=True)
+    return updated
+
+
+def _init_bare_repo(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        raise ValueError("仓库目录已存在")
+    _run_git(["init", "--bare", str(path)])
+    _run_git(["--git-dir", str(path), "config", "http.receivepack", "true"])
+
+    env = _identity_env()
     blob = _run_git(
         ["--git-dir", str(path), "hash-object", "-w", "--stdin"],
-        input_bytes=b".cili/\n",
+        input_bytes=("\n".join(_SHARED_GITIGNORE_RULES) + "\n").encode("utf-8"),
         env=env,
     ).strip()
     tree = _run_git(
