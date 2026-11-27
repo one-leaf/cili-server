@@ -64,20 +64,24 @@ def _bearer_token(request: Request) -> str:
 async def send_sms(payload: SmsSendRequest, request: Request):
     conn = _conn(request)
     org = get_org_by_ref(conn, payload.org_id)
-    org_id = str(org["id"]) if org is not None else ""
-    person = (
-        find_person(conn, org_id, payload.phone)
-        if org is not None
-        else None
-    )
-    settings = request.app.state.settings
+    if org is None:
+        raise ApiError(404, "org_not_found", message="组织不存在或已下线，请重新连接")
+    org_id = str(org["id"])
 
-    # 防枚举：组织不存在、手机号未登记或已停用都返回同样的 ok，且不发送。
-    if org is None or person is None:
-        return {
-            "ok": True,
-            "cooldown_seconds": settings.verification.cooldown_seconds,
-        }
+    # 按需求返回明确提示（不再静默成功）：未登记 / 已停用分别给出中文说明。
+    person = find_person(conn, org_id, payload.phone, enabled_only=False)
+    if person is None:
+        raise ApiError(
+            404,
+            "phone_not_registered",
+            message="找不到用户，请输入正确的手机号",
+        )
+    if not int(person["enabled"]):
+        raise ApiError(
+            403,
+            "person_disabled",
+            message="该用户已被停用，请联系管理员",
+        )
 
     result = _service(request).send_code(
         payload.phone,

@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from typing import Any
 
 from app.services.groups import list_person_groups
 from app.services.model_config import get_org_model
+
+
+def provider_key_for(org) -> str:
+    """组织 provider 名：直接使用企业名（仅替换空白和 /）；为空时回退 slug。"""
+    name = re.sub(r"[\s/]+", "-", str(org["name"] or "").strip()).strip("-")
+    return (name or str(org["slug"] or "default"))[:64]
 
 
 def resolve_config(
@@ -24,7 +31,7 @@ def resolve_config(
     if isinstance(model, dict):
         model = dict(model)
         model.pop("roles", None)
-        model["provider_key"] = f"org-{org['slug']}"
+        model["provider_key"] = provider_key_for(org)
         person_key = str(person["model_api_key"] or "")
         if person_key:
             model["api_key"] = person_key
@@ -60,6 +67,7 @@ def resolve_config(
         workspaces.append(
             {
                 "key": key,
+                "slug": key,
                 "name": str(row["name"]),
                 "memory_enabled": True,
                 "group_id": str(row["group_id"]),

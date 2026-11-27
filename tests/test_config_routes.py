@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.db import connect, init_schema
 from app.main import create_app
+from app.services.delivery import provider_key_for
 from app.services.groups import add_group_member, create_group
 from app.services.identity import (
     create_device,
@@ -67,6 +68,12 @@ def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def test_provider_key_uses_org_name():
+    assert provider_key_for({"name": "云关通", "slug": "demo"}) == "云关通"
+    assert provider_key_for({"name": "Acme 科技", "slug": "acme"}) == "Acme-科技"
+    assert provider_key_for({"name": "", "slug": "acme"}) == "acme"
+
+
 def _model() -> dict:
     return {
         "label": "组织模型",
@@ -109,13 +116,14 @@ def test_config_model_and_workspace_from_repo_groups(tmp_path):
         assert body["user"]["groups"] == ["研发部"]
 
         model = body["model"]
-        assert model["provider_key"] == "org-acme"
+        assert model["provider_key"] == "Acme"
         assert model["protocol"] == "openai"
         assert model["models"]["main"]["name"] == "m1"
         assert "api_key" not in model
 
         workspace = body["workspaces"][0]
         assert workspace["key"] == "rd-shared"
+        assert workspace["slug"] == "rd-shared"
         assert workspace["name"] == "研发共享"
         assert workspace["group_name"] == "研发部"
         assert workspace["memory_enabled"] is True

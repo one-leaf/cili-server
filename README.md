@@ -116,11 +116,11 @@ uvicorn app.main:app --host 127.0.0.1 --port 7681
 
 - `GET /api/v1/health`
 - `GET /api/v1/public/orgs`：无需认证，返回 `{orgs: [{id, name}]}`；`id` 是组织 slug（客户端用 `org-<slug>` 命名模型 provider）。
-- `POST /api/v1/auth/sms/send`：body `{org_id, phone}`，`org_id` 取 public/orgs 返回的 slug（也兼容内部 id），返回 `{ok, cooldown_seconds}`；组织不存在、手机号未登记/停用也返回同样的 ok，且不实际发送。
+- `POST /api/v1/auth/sms/send`：body `{org_id, phone}`，`org_id` 取 public/orgs 返回的 slug（也兼容内部 id），成功返回 `{ok, cooldown_seconds}`；组织不存在返回 404 `org_not_found`，手机号未登记返回 404 `phone_not_registered`（detail：找不到用户，请输入正确的手机号），人员已停用返回 403 `person_disabled`。
 - `POST /api/v1/auth/sms/verify`：body `{org_id, phone, code, device_name}`；校验通过后签发 30 天滑动设备令牌，返回 `{token, expires_at, org, user, config_version}`，其中 `org.id` 为 slug，`user.groups` 为群组名列表。
 - `GET /api/v1/auth/me`：`Authorization: Bearer <token>`，校验令牌并滑动续期。
 - `POST /api/v1/auth/logout`：`Authorization: Bearer <token>`，吊销令牌。
-- `GET /api/v1/config`：`Authorization: Bearer <token>`；`org` 含 `id`（slug）、`name`、`web_url`，`user` 含本人的 `groups`；`model` 来自组织级模型设置，注入 `provider_key`（固定 `org-<slug>`）和该人员的 `api_key`；`workspaces` 是人员所在群组绑定的仓库，`git` 块补齐 `remote_url`（`web_url` + `/git/<slug>.git`）、`branch`、`username`（人员中文名）、`password`（当前设备令牌）、`sync_mode`（`remote_wins`）。支持 `If-None-Match`（ETag = 组织 config_version + 人员 updated_at），命中返回 304。组织未配置模型时返回 409 `org_model_not_configured`。
+- `GET /api/v1/config`：`Authorization: Bearer <token>`；`org` 含 `id`（slug）、`name`、`web_url`，`user` 含本人的 `groups`；`model` 来自组织级模型设置，注入 `provider_key`（直接使用企业名，空白和 `/` 替换为 `-`，企业名为空时回退 slug）和该人员的 `api_key`；`workspaces` 是人员所在群组绑定的仓库，每条带 `slug`（= 仓库 slug，客户端用作目录/工作区 slug），`git` 块补齐 `remote_url`（`web_url` + `/git/<slug>.git`）、`branch`、`username`（人员中文名）、`password`（当前设备令牌）、`sync_mode`（`remote_wins`）。支持 `If-None-Match`（ETag = 组织 config_version + 人员 updated_at），命中返回 304。组织未配置模型时返回 409 `org_model_not_configured`。
 - 错误统一为 `{"error": "<code>", "detail": "<说明>"}`；限流额外带 `retry_after`。
 
 设备令牌只在 verify 响应中出现一次；数据库只存 SHA-256 哈希，30 天有效，每次 `/me` 或配置拉取时续期。

@@ -160,33 +160,42 @@ def test_send_and_verify_issues_device_token():
         assert after.json()["error"] == "token_invalid"
 
 
-def test_unregistered_or_disabled_phone_is_silent_and_not_sent():
+def test_unregistered_phone_returns_explicit_error():
     with _client(phone="13900000000") as (client, provider, org_id, _person_id):
         response = client.post(
             "/api/v1/auth/sms/send",
             json={"org_id": org_id, "phone": "13800000000"},
         )
-        assert response.status_code == 200
-        assert response.json()["ok"] is True
+        assert response.status_code == 404
+        body = response.json()
+        assert body["error"] == "phone_not_registered"
+        assert body["detail"] == "找不到用户，请输入正确的手机号"
         assert provider.sent == []
 
+
+def test_disabled_phone_returns_explicit_error():
     with _client(enabled=False) as (client, provider, org_id, _person_id):
         response = client.post(
             "/api/v1/auth/sms/send",
             json={"org_id": org_id, "phone": "13800000000"},
         )
-        assert response.status_code == 200
+        assert response.status_code == 403
+        body = response.json()
+        assert body["error"] == "person_disabled"
+        assert body["detail"] == "该用户已被停用，请联系管理员"
         assert provider.sent == []
 
 
-def test_unknown_org_is_silent():
+def test_unknown_org_returns_explicit_error():
     with _client() as (client, provider, _org_id, _person_id):
         response = client.post(
             "/api/v1/auth/sms/send",
             json={"org_id": "org_missing", "phone": "13800000000"},
         )
-        assert response.status_code == 200
-        assert response.json()["ok"] is True
+        assert response.status_code == 404
+        body = response.json()
+        assert body["error"] == "org_not_found"
+        assert body["detail"] == "组织不存在或已下线，请重新连接"
         assert provider.sent == []
 
 
