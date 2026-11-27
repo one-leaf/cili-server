@@ -372,7 +372,8 @@ def resolve_config(
             remote = f"{web_url}/git/{workspace.get('key', '')}.git"
         git["remote_url"] = remote
         git.setdefault("branch", "main")
-        git["username"] = "org"
+        # 员工没有邮箱，Git 用户名统一用人员中文名（网关不校验用户名）
+        git["username"] = str(person["name"] or person_id)
         git.setdefault("sync_mode", "remote_wins")
         if token:
             git["password"] = token
@@ -390,7 +391,6 @@ def resolve_config(
             "id": person_id,
             "name": str(person["name"]),
             "phone": str(person["phone"]),
-            "email": str(person["email"]),
             "groups": [str(group["name"]) for group in groups],
         },
         "model": model,

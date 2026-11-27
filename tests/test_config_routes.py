@@ -241,29 +241,9 @@ def test_config_injects_workspace_git_block():
         git = workspace["git"]
         assert git["remote_url"] == "https://cili.example.com/git/rd-shared.git"
         assert git["branch"] == "main"
-        assert git["username"] == "org"
+        assert git["username"] == "张三"
         assert git["password"] == token
         assert git["sync_mode"] == "remote_wins"
-
-
-def test_config_delivers_person_email():
-    with _client() as (client, conn, org, person, _group, token):
-        create_bundle(
-            conn, org_id=str(org["id"]), name="组织模型",
-            model={"label": "org", "models": {"main": {"name": "m1"}}},
-            is_default=True,
-        )
-        assert client.get("/api/v1/config", headers=_auth(token)).json()["user"]["email"] == ""
-
-        update_person(
-            conn,
-            str(person["id"]),
-            email="zhangsan@example.com",
-            now=int(time.time()) + 5,
-        )
-
-        body = client.get("/api/v1/config", headers=_auth(token)).json()
-        assert body["user"]["email"] == "zhangsan@example.com"
 
 
 def test_config_requires_model_configuration():

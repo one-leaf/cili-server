@@ -120,7 +120,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 7681
 - `POST /api/v1/auth/sms/verify`：body `{org_id, phone, code, device_name}`；校验通过后签发 30 天滑动设备令牌，返回 `{token, expires_at, org, user, config_version}`，其中 `org.id` 为 slug，`user.groups` 为群组名列表。
 - `GET /api/v1/auth/me`：`Authorization: Bearer <token>`，校验令牌并滑动续期。
 - `POST /api/v1/auth/logout`：`Authorization: Bearer <token>`，吊销令牌。
-- `GET /api/v1/config`：`Authorization: Bearer <token>`；`org` 含 `id`（slug）、`name`、`web_url`，`user` 含本人的 `email` 和 `groups`；`model` 会在配置包的模型配置上注入 `provider_key`（固定 `org-<slug>`）和该人员的 `api_key`；`workspaces[].git` 会补齐 `remote_url`（缺省用 `web_url` + `/git/<key>.git` 拼接）、`branch`、`username: "org"`、`password`（当前设备令牌）、`sync_mode`（默认 `remote_wins`）。支持 `If-None-Match`（ETag = 组织 config_version + 人员 updated_at），命中返回 304。若该人员没有可用的模型配置，返回 409 `org_model_not_configured`（客户端需要 model 才能应用配置）。
+- `GET /api/v1/config`：`Authorization: Bearer <token>`；`org` 含 `id`（slug）、`name`、`web_url`，`user` 含本人的 `groups`；`model` 会在配置包的模型配置上注入 `provider_key`（固定 `org-<slug>`）和该人员的 `api_key`；`workspaces[].git` 会补齐 `remote_url`（缺省用 `web_url` + `/git/<key>.git` 拼接）、`branch`、`username`（人员中文名）、`password`（当前设备令牌）、`sync_mode`（默认 `remote_wins`）。支持 `If-None-Match`（ETag = 组织 config_version + 人员 updated_at），命中返回 304。若该人员没有可用的模型配置，返回 409 `org_model_not_configured`（客户端需要 model 才能应用配置）。
 - 错误统一为 `{"error": "<code>", "detail": "<说明>"}`；限流额外带 `retry_after`。
 
 设备令牌只在 verify 响应中出现一次；数据库只存 SHA-256 哈希，30 天有效，每次 `/me` 或配置拉取时续期。
@@ -140,6 +140,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 7681
 - `POST /login` / `POST /logout` / `GET /me`
 - `GET /orgs`、`PATCH /orgs/{id}`：修改企业名称和对外 Web 地址（两者都会随 `/api/v1/config` 下发并推进 config_version）
 - `GET/PUT/DELETE /orgs/{id}/sms`：组织级腾讯云短信配置（SecretId/SecretKey/SdkAppId/签名/模板/Region），保存后即时生效；响应只返回 SecretId 掩码与 `has_secret_key`，不返回密钥明文
+- `GET /backup`：下载 SQLite 在线快照（`.db`，含组织/人员/配置包/设备/审计与短信密钥，请妥善保管）；`POST /restore`：上传 `.db` 覆盖当前数据库，恢复前自动备份到 `data/db/backups/`，即时生效（设备与会话以备份为准，恢复后需重新登录）
 - `GET/POST /people`、`PATCH/DELETE /people/{id}`
 - `GET/POST /groups`、`PATCH/DELETE /groups/{id}`、成员增删
 - `GET/POST /bundles`、`PATCH/DELETE /bundles/{id}`、`POST /bundles/{id}/bind`、`GET /bindings`、`DELETE /bindings/{id}`

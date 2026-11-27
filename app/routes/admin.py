@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import sqlite3
+import tempfile
+import threading
+import time
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, File, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
+
+from app.db import init_schema
 
 from app.errors import ApiError
 from app.services.audit import list_entries as list_audit_entries
@@ -62,6 +71,26 @@ from app.services.repos import (
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 ADMIN_COOKIE = "cili_admin"
+logger = logging.getLogger(__name__)
+
+RESTORE_MAX_BYTES = 200 * 1024 * 1024
+_RESTORE_REQUIRED_TABLES = {"organizations", "people", "admin_users"}
+_RESTORE_TABLES = (
+    "organizations",
+    "admin_users",
+    "people",
+    "groups",
+    "group_members",
+    "bundles",
+    "bundle_bindings",
+    "devices",
+    "repos",
+    "audit_log",
+    "admin_sessions",
+    "sms_codes",
+    "sms_send_events",
+)
+_restore_lock = threading.Lock()
 
 
 # ── 依赖 ──────────────────────────────────────────────
@@ -87,6 +116,88 @@ def _check_origin(request: Request) -> None:
     expected = (request.headers.get("host") or "").split(":", 1)[0]
     if not host or (expected and host != expected):
         raise ApiError(403, "origin_forbidden")
+
+
+def _snapshot_db(conn: sqlite3.Connection, target: Path) -> None:
+    """生成一致的 SQLite 快照（在线备份 API）。"""
+    dest = sqlite3.connect(str(target))
+    try:
+        conn.backup(dest)
+    finally:
+        dest.close()
+
+
+def _pre_restore_backup(settings, conn: sqlite3.Connection) -> str:
+    db_path = str(getattr(settings, "database_path", "") or "")
+    if not db_path or db_path == ":memory:":
+        return ""
+    target_dir = Path(db_path).parent / "backups"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"pre-restore-{time.strftime('%Y%m%d-%H%M%S')}.db"
+    _snapshot_db(conn, target)
+    return str(target)
+
+
+def _validate_backup(path: Path) -> None:
+    try:
+        test = sqlite3.connect(str(path))
+    except sqlite3.DatabaseError:
+        raise ApiError(400, "invalid_backup", message="不是有效的 SQLite 数据库") from None
+    try:
+        tables = {
+            row[0]
+            for row in test.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        missing = _RESTORE_REQUIRED_TABLES - tables
+        if missing:
+            raise ApiError(
+                400,
+                "invalid_backup",
+                message="备份缺少必要表: " + ", ".join(sorted(missing)),
+            )
+        # 兼容旧版本备份：补齐新增列/表
+        init_schema(test)
+    except sqlite3.DatabaseError:
+        raise ApiError(400, "invalid_backup", message="备份文件无法读取") from None
+    finally:
+        test.close()
+
+
+def _apply_restore(conn: sqlite3.Connection, path: Path) -> None:
+    conn.execute("PRAGMA foreign_keys=OFF")
+    attached = False
+    try:
+        conn.execute("ATTACH DATABASE ? AS imported", (str(path),))
+        attached = True
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for table in _RESTORE_TABLES:
+                dest_cols = [
+                    row[1]
+                    for row in conn.execute(f"PRAGMA main.table_info({table})")
+                ]
+                src_cols = {
+                    row[1]
+                    for row in conn.execute(f"PRAGMA imported.table_info({table})")
+                }
+                cols = [col for col in dest_cols if col in src_cols]
+                conn.execute(f"DELETE FROM main.{table}")
+                if cols:
+                    spec = ", ".join(cols)
+                    conn.execute(
+                        f"INSERT INTO main.{table} ({spec})"
+                        f" SELECT {spec} FROM imported.{table}"
+                    )
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+    finally:
+        if attached:
+            conn.execute("DETACH DATABASE imported")
+        conn.execute("PRAGMA foreign_keys=ON")
 
 
 def _service_call(fn, *args, **kwargs):
@@ -201,7 +312,6 @@ def _person(row) -> dict:
         "org_id": str(row["org_id"]),
         "name": str(row["name"]),
         "phone": str(row["phone"]),
-        "email": str(row["email"]),
         "enabled": bool(row["enabled"]),
         "note": str(row["note"]),
         "model_api_key": str(row["model_api_key"]),
@@ -305,7 +415,6 @@ class PersonCreate(BaseModel):
     org_id: str
     name: str = Field(min_length=1, max_length=64)
     phone: str = Field(min_length=1, max_length=32)
-    email: str = Field(default="", max_length=200)
     enabled: bool = True
     note: str = ""
     model_api_key: str = Field(default="", max_length=512)
@@ -314,7 +423,6 @@ class PersonCreate(BaseModel):
 class PersonUpdate(BaseModel):
     name: str | None = None
     phone: str | None = None
-    email: str | None = Field(default=None, max_length=200)
     enabled: bool | None = None
     note: str | None = None
     model_api_key: str | None = Field(default=None, max_length=512)
@@ -583,7 +691,6 @@ async def create_person_route(
         org_id=payload.org_id,
         name=payload.name,
         phone=payload.phone,
-        email=payload.email.strip(),
         enabled=payload.enabled,
         note=payload.note,
         model_api_key=payload.model_api_key.strip(),
@@ -607,9 +714,6 @@ async def update_person_route(
         person_id,
         name=payload.name,
         phone=payload.phone,
-        email=(
-            payload.email.strip() if payload.email is not None else None
-        ),
         enabled=payload.enabled,
         note=payload.note,
         model_api_key=(
@@ -974,3 +1078,82 @@ async def revoke_device_route(
     _audit(request, _admin, str(row["org_id"]), "device_revoke",
            target=device_id)
     return {"ok": True}
+
+
+# ── 备份与恢复 ────────────────────────────────────────
+
+
+@router.get("/backup")
+async def download_backup(request: Request, _admin=Depends(require_admin)):
+    conn = _conn(request)
+    fd, raw_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    path = Path(raw_path)
+    try:
+        _snapshot_db(conn, path)
+    except Exception as exc:  # noqa: BLE001
+        path.unlink(missing_ok=True)
+        logger.error("[admin] 生成备份失败", exc_info=True)
+        raise ApiError(500, "backup_failed", message="生成备份失败") from exc
+    _audit(request, _admin, "", "backup_export")
+    filename = f"cili-server-{time.strftime('%Y%m%d-%H%M%S')}.db"
+    return FileResponse(
+        path,
+        media_type="application/octet-stream",
+        filename=filename,
+        background=BackgroundTask(lambda: path.unlink(missing_ok=True)),
+    )
+
+
+@router.post("/restore")
+async def restore_backup(
+    request: Request,
+    file: UploadFile = File(...),
+    _admin: AdminIdentity = Depends(require_admin),
+):
+    _check_origin(request)
+    data = await file.read(RESTORE_MAX_BYTES + 1)
+    if len(data) > RESTORE_MAX_BYTES:
+        raise ApiError(413, "backup_too_large", message="备份文件过大")
+    if not data.startswith(b"SQLite format 3\x00"):
+        raise ApiError(400, "invalid_backup", message="不是有效的 SQLite 备份文件")
+
+    fd, raw_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    path = Path(raw_path)
+    try:
+        path.write_bytes(data)
+        _validate_backup(path)
+        conn = _conn(request)
+        if not _restore_lock.acquire(timeout=30):
+            raise ApiError(409, "restore_busy", message="另一个恢复任务正在进行")
+        try:
+            try:
+                pre_backup = _pre_restore_backup(
+                    request.app.state.settings, conn
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.error("[admin] 恢复前备份失败", exc_info=True)
+                raise ApiError(
+                    500, "backup_failed", message="恢复前备份失败，已中止"
+                ) from exc
+            try:
+                _apply_restore(conn, path)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("[admin] 恢复数据库失败", exc_info=True)
+                raise ApiError(
+                    500, "restore_failed", message="恢复数据库失败"
+                ) from exc
+        finally:
+            _restore_lock.release()
+
+        resolver = getattr(request.app.state, "sms_resolver", None)
+        if resolver is not None:
+            resolver.close()
+        _audit(
+            request, _admin, "", "backup_restore",
+            detail=Path(pre_backup).name if pre_backup else "",
+        )
+        return {"ok": True, "pre_restore_backup": pre_backup}
+    finally:
+        path.unlink(missing_ok=True)

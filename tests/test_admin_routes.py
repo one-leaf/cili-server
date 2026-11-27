@@ -193,6 +193,44 @@ def test_sms_settings_masked_and_clear():
         assert after["configured"] is False
 
 
+def test_backup_and_restore(tmp_path):
+    with _client() as (client, _conn, org):
+        _login(client)
+        org_id = org["id"]
+        backup = client.get("/api/v1/admin/backup")
+        assert backup.status_code == 200
+        assert backup.content.startswith(b"SQLite format 3\x00")
+
+        created = client.post(
+            "/api/v1/admin/people",
+            json={"org_id": org_id, "name": "临时", "phone": "13700000000"},
+        )
+        assert created.status_code == 200
+        assert len(
+            client.get(f"/api/v1/admin/people?org_id={org_id}").json()["people"]
+        ) == 1
+
+        path = tmp_path / "backup.db"
+        path.write_bytes(backup.content)
+        with path.open("rb") as handle:
+            restored = client.post(
+                "/api/v1/admin/restore",
+                files={"file": ("backup.db", handle, "application/octet-stream")},
+            )
+        assert restored.status_code == 200
+        people = client.get(f"/api/v1/admin/people?org_id={org_id}").json()["people"]
+        assert people == []
+
+        bad = client.post(
+            "/api/v1/admin/restore",
+            files={
+                "file": ("bad.db", b"not a database", "application/octet-stream")
+            },
+        )
+        assert bad.status_code == 400
+        assert bad.json()["error"] == "invalid_backup"
+
+
 def test_people_crud():
     with _client() as (client, _conn, org):
         _login(client)
@@ -204,14 +242,12 @@ def test_people_crud():
                 "org_id": org_id,
                 "name": "张三",
                 "phone": "13800000000",
-                "email": "zhangsan@example.com",
                 "model_api_key": "sk-test-123",
             },
         )
         assert created.status_code == 200
         person = created.json()["person"]
         person_id = person["id"]
-        assert person["email"] == "zhangsan@example.com"
         assert person["model_api_key"] == "sk-test-123"
 
         listed = client.get(f"/api/v1/admin/people?org_id={org_id}")
@@ -223,14 +259,12 @@ def test_people_crud():
             json={
                 "enabled": False,
                 "note": "停用",
-                "email": "new@example.com",
                 "model_api_key": "",
             },
         )
         assert updated.status_code == 200
         assert updated.json()["person"]["enabled"] is False
         assert updated.json()["person"]["note"] == "停用"
-        assert updated.json()["person"]["email"] == "new@example.com"
         assert updated.json()["person"]["model_api_key"] == ""
 
         deleted = client.delete(f"/api/v1/admin/people/{person_id}")

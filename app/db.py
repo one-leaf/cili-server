@@ -23,7 +23,6 @@ CREATE TABLE IF NOT EXISTS people (
     org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     phone TEXT NOT NULL,
-    email TEXT NOT NULL DEFAULT '',
     enabled INTEGER NOT NULL DEFAULT 1,
     note TEXT NOT NULL DEFAULT '',
     model_api_key TEXT NOT NULL DEFAULT '',
@@ -177,7 +176,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
     # 兼容上一版已经创建的库：补 org_id 列。
     _ensure_column(conn, "organizations", "web_url", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "people", "model_api_key", "TEXT NOT NULL DEFAULT ''")
-    _ensure_column(conn, "people", "email", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "sms_codes", "org_id", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "sms_send_events", "org_id", "TEXT NOT NULL DEFAULT ''")
     conn.commit()

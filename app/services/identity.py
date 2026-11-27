@@ -125,7 +125,6 @@ def create_person(
     org_id: str,
     name: str,
     phone: str,
-    email: str = "",
     enabled: bool = True,
     note: str = "",
     model_api_key: str = "",
@@ -136,15 +135,14 @@ def create_person(
     created = int(now if now is not None else time.time())
     conn.execute(
         "INSERT INTO people"
-        " (id, org_id, name, phone, email, enabled, note, model_api_key,"
+        " (id, org_id, name, phone, enabled, note, model_api_key,"
         "  created_at, updated_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             person_id,
             org_id,
             name,
             normalized,
-            str(email or ""),
             1 if enabled else 0,
             note,
             str(model_api_key or ""),
@@ -172,7 +170,6 @@ def update_person(
     *,
     name: str | None = None,
     phone: str | None = None,
-    email: str | None = None,
     enabled: bool | None = None,
     note: str | None = None,
     model_api_key: str | None = None,
@@ -191,9 +188,6 @@ def update_person(
     if phone is not None:
         fields.append("phone = ?")
         values.append(normalize_phone(phone))
-    if email is not None:
-        fields.append("email = ?")
-        values.append(str(email))
     if enabled is not None:
         fields.append("enabled = ?")
         values.append(1 if enabled else 0)

@@ -109,7 +109,6 @@
         <form id="person-form" class="row">
           <div class="field"><label>姓名</label><input name="name" required></div>
           <div class="field"><label>手机号</label><input name="phone" required></div>
-          <div class="field"><label>邮箱</label><input name="email" type="email" placeholder="name@example.com"></div>
           <div class="field"><label>备注</label><input name="note"></div>
           <div class="field"><label>模型 API Key（可空）</label><input name="model_api_key" type="password" autocomplete="new-password"></div>
           <button class="btn primary" type="submit">添加</button>
@@ -284,6 +283,17 @@
         <div id="sms-status" class="muted"></div>
         <div id="sms-error" class="error"></div>
       </div>
+      <div class="panel">
+        <h2>备份与恢复</h2>
+        <p class="muted">导出为 SQLite 快照（含短信密钥等敏感信息，请妥善保管）。导入会覆盖当前组织、人员、配置包、设备与审计记录；恢复前会自动备份当前数据库，恢复后需要使用备份文件里的管理员账号重新登录。</p>
+        <div class="row">
+          <a class="btn" href="/api/v1/admin/backup" download>下载数据库备份</a>
+          <input type="file" id="restore-file" accept=".db,application/octet-stream">
+          <button class="btn danger" type="button" id="restore-btn">导入并覆盖</button>
+        </div>
+        <div id="restore-status" class="muted"></div>
+        <div id="restore-error" class="error"></div>
+      </div>
     </section>
   </main>
 </div>
@@ -404,18 +414,16 @@
     const rows = data.people.map((p) => `
       <tr>
         <td>${esc(p.name)}</td><td>${esc(p.phone)}</td>
-        <td>${p.email ? esc(p.email) : '<span class="muted">未填</span>'}</td>
         <td><span class="pill ${p.enabled ? 'ok' : 'warn'}">${p.enabled ? '启用' : '停用'}</span></td>
         <td class="key">${p.model_api_key ? esc(p.model_api_key) : '<span class="muted">未配置</span>'}</td>
         <td>${esc(p.note)}</td>
         <td class="actions">
           <button class="btn small" data-person-key="${esc(p.id)}" data-person-key-value="${esc(p.model_api_key)}">设置 Key</button>
-          <button class="btn small" data-person-email="${esc(p.id)}" data-person-email-value="${esc(p.email)}">改邮箱</button>
           <button class="btn small" data-person-toggle="${esc(p.id)}" data-enabled="${p.enabled ? '1' : '0'}">${p.enabled ? '停用' : '启用'}</button>
           <button class="btn small danger" data-person-delete="${esc(p.id)}">删除</button>
         </td>
       </tr>`);
-    $('people-list').innerHTML = table(['姓名', '手机号', '邮箱', '状态', '模型 Key', '备注', '操作'], rows);
+    $('people-list').innerHTML = table(['姓名', '手机号', '状态', '模型 Key', '备注', '操作'], rows);
   }
 
   async function renderGroups() {
@@ -789,6 +797,36 @@
       }
     });
 
+    $('restore-btn').addEventListener('click', async () => {
+      const input = $('restore-file');
+      $('restore-error').textContent = '';
+      if (!input.files.length) {
+        $('restore-error').textContent = '请选择 .db 备份文件';
+        return;
+      }
+      if (!confirm('导入会覆盖当前全部数据，确定继续？')) return;
+      $('restore-status').textContent = '导入中…';
+      const form = new FormData();
+      form.append('file', input.files[0]);
+      try {
+        const response = await fetch('/api/v1/admin/restore', {
+          method: 'POST',
+          body: form,
+          credentials: 'same-origin',
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const detail = data.detail && data.detail !== data.error ? data.detail : '';
+          throw new Error(detail || data.error || ('HTTP ' + response.status));
+        }
+        $('restore-status').textContent = '恢复完成，正在重新加载…';
+        setTimeout(() => location.reload(), 800);
+      } catch (error) {
+        $('restore-status').textContent = '';
+        $('restore-error').textContent = error.message;
+      }
+    });
+
     $('sms-reset').addEventListener('click', async () => {
       if (!confirm('清除组织级短信配置，回退到服务端默认？')) return;
       $('sms-status').textContent = '';
@@ -828,7 +866,6 @@
             org_id: state.orgId,
             name: form.get('name'),
             phone: form.get('phone'),
-            email: form.get('email') || '',
             note: form.get('note'),
             model_api_key: form.get('model_api_key') || '',
           },
@@ -985,14 +1022,6 @@
           if (!confirm('删除该群组？')) return;
           await api(`/api/v1/admin/groups/${encodeURIComponent(target.dataset.groupDelete)}`, { method: 'DELETE' });
           await renderGroups();
-        } else if (target.dataset.personEmail) {
-          const value = prompt('邮箱', target.dataset.personEmailValue || '');
-          if (value === null) return;
-          await api(`/api/v1/admin/people/${encodeURIComponent(target.dataset.personEmail)}`, {
-            method: 'PATCH',
-            body: { email: value.trim() },
-          });
-          await renderPeople();
         } else if (target.dataset.personKey) {
           const value = prompt('模型 API Key（留空清除）', target.dataset.personKeyValue || '');
           if (value === null) return;
