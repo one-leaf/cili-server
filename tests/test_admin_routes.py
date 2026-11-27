@@ -90,6 +90,64 @@ def test_login_wrong_password():
         assert response.json()["error"] == "invalid_credentials"
 
 
+def test_admin_account_update():
+    with _client() as (client, conn, _org):
+        _login(client)
+        wrong = client.post(
+            "/api/v1/admin/account",
+            json={"current_password": "wrong", "username": "admin"},
+        )
+        assert wrong.status_code == 400
+        assert wrong.json()["detail"] == "当前密码不正确"
+
+        short = client.post(
+            "/api/v1/admin/account",
+            json={
+                "current_password": PASSWORD,
+                "username": "admin",
+                "new_password": "short",
+            },
+        )
+        assert short.status_code == 400
+
+        unchanged = client.post(
+            "/api/v1/admin/account",
+            json={"current_password": PASSWORD, "username": "admin"},
+        )
+        assert unchanged.status_code == 400
+
+        create_admin(conn, username="taken", password=PASSWORD)
+        duplicate = client.post(
+            "/api/v1/admin/account",
+            json={"current_password": PASSWORD, "username": "taken"},
+        )
+        assert duplicate.status_code == 400
+        assert duplicate.json()["detail"] == "账号已存在"
+
+        changed = client.post(
+            "/api/v1/admin/account",
+            json={
+                "current_password": PASSWORD,
+                "username": "root",
+                "new_password": "newpassword123",
+            },
+        )
+        assert changed.status_code == 200
+        assert client.get("/api/v1/admin/me").status_code == 401
+        assert client.post(
+            "/api/v1/admin/login",
+            json={"username": "admin", "password": PASSWORD},
+        ).status_code == 401
+        assert client.post(
+            "/api/v1/admin/login",
+            json={"username": "admin", "password": "newpassword123"},
+        ).status_code == 401
+        assert client.post(
+            "/api/v1/admin/login",
+            json={"username": "root", "password": "newpassword123"},
+        ).status_code == 200
+
+
 def test_initial_admin_seed_from_settings():
     admin = AdminConfig(initial_username="root", initial_password="password123")
     with _client(admin=admin, seed_admin=False) as (client, _conn, _org):

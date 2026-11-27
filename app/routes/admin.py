@@ -29,6 +29,7 @@ from app.services.admin_auth import (
     authenticate_admin_session,
     create_admin_session,
     revoke_admin_session,
+    update_admin_account,
 )
 from app.services.groups import (
     add_group_member,
@@ -332,6 +333,12 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=256)
 
 
+class AccountUpdate(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    username: str | None = Field(default=None, min_length=1, max_length=64)
+    new_password: str | None = Field(default=None, max_length=256)
+
+
 class OrgUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=64)
     web_url: str | None = Field(default=None, max_length=200)
@@ -450,6 +457,32 @@ async def logout(request: Request, _admin: AdminIdentity = Depends(require_admin
 @router.get("/me")
 async def me(admin: AdminIdentity = Depends(require_admin)):
     return {"id": admin.id, "username": admin.username}
+
+
+@router.post("/account")
+async def update_account_route(
+    payload: AccountUpdate, request: Request,
+    _admin: AdminIdentity = Depends(require_admin),
+):
+    _check_origin(request)
+    _service_call(
+        update_admin_account, _conn(request), _admin.id,
+        current_password=payload.current_password,
+        username=payload.username,
+        new_password=payload.new_password,
+    )
+    changed = []
+    if payload.username and payload.username.strip() != _admin.username:
+        changed.append("账号")
+    if payload.new_password:
+        changed.append("密码")
+    _audit(
+        request, _admin, "", "admin_account_update",
+        target=_admin.username, detail="、".join(changed),
+    )
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(ADMIN_COOKIE, path="/")
+    return response
 
 
 # ── 组织 ──────────────────────────────────────────────

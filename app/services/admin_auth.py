@@ -190,3 +190,53 @@ def revoke_admin_session(conn: sqlite3.Connection, token: str) -> bool:
 
 def _hash_session(token: str) -> str:
     return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+
+
+def update_admin_account(
+    conn: sqlite3.Connection,
+    admin_id: str,
+    *,
+    current_password: str,
+    username: str | None = None,
+    new_password: str | None = None,
+) -> None:
+    """修改管理员账号名/密码；成功后吊销该管理员的全部会话。"""
+    row = conn.execute(
+        "SELECT * FROM admin_users WHERE id = ?", (admin_id,)
+    ).fetchone()
+    if row is None or not verify_password(
+        current_password, str(row["password_hash"])
+    ):
+        raise ValueError("当前密码不正确")
+
+    fields: list[str] = []
+    values: list[object] = []
+    if username is not None:
+        value = str(username).strip()
+        if not value:
+            raise ValueError("账号不能为空")
+        if value != str(row["username"]):
+            exists = conn.execute(
+                "SELECT id FROM admin_users WHERE username = ? AND id != ?",
+                (value, admin_id),
+            ).fetchone()
+            if exists is not None:
+                raise ValueError("账号已存在")
+            fields.append("username = ?")
+            values.append(value)
+    if new_password is not None:
+        if len(str(new_password)) < 8:
+            raise ValueError("新密码至少 8 位")
+        fields.append("password_hash = ?")
+        values.append(hash_password(new_password))
+    if not fields:
+        raise ValueError("没有需要修改的内容")
+
+    values.append(admin_id)
+    conn.execute(
+        f"UPDATE admin_users SET {', '.join(fields)} WHERE id = ?", values
+    )
+    conn.execute(
+        "DELETE FROM admin_sessions WHERE admin_id = ?", (admin_id,)
+    )
+    conn.commit()

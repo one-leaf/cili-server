@@ -203,6 +203,18 @@
         <div id="settings-error" class="error"></div>
       </div>
       <div class="panel">
+        <h2>管理员账号</h2>
+        <form id="account-form" class="row">
+          <div class="field"><label>当前密码</label><input id="acc-pwd" type="password" autocomplete="current-password"></div>
+          <div class="field"><label>管理员账号</label><input id="acc-username" autocomplete="username"></div>
+          <div class="field"><label>新密码（留空不改）</label><input id="acc-new-pwd" type="password" autocomplete="new-password"></div>
+          <div class="field"><label>确认新密码</label><input id="acc-confirm" type="password" autocomplete="new-password"></div>
+          <button class="btn primary" type="submit">保存账号设置</button>
+        </form>
+        <div id="account-status" class="muted"></div>
+        <div id="account-error" class="error"></div>
+      </div>
+      <div class="panel">
         <h2>模型设置（所有人员共用）</h2>
         <p class="muted">所有人员使用同一套模型接入；API Key 按人员单独下发（人员页「设置 Key」），这里不填 Key。</p>
         <div class="row">
@@ -278,7 +290,7 @@
   'use strict';
   const state = {
     orgs: [], orgId: '', tab: 'people', groupOptions: '', personOptions: '',
-    repos: [],
+    repos: [], adminUsername: '',
   };
   const $ = (id) => document.getElementById(id);
 
@@ -314,6 +326,7 @@
     $('login-view').hidden = true;
     $('app-view').hidden = false;
     const me = await api('/api/v1/admin/me');
+    state.adminUsername = me.username;
     $('who').textContent = me.username;
     await loadOrgs();
   }
@@ -353,6 +366,7 @@
     form.elements.web_url.value = current.web_url || '';
     $('settings-status').textContent = '';
     $('settings-error').textContent = '';
+    $('acc-username').value = state.adminUsername || '';
     await loadSmsSettings();
     await loadModelSettings();
   }
@@ -793,6 +807,38 @@
       const button = event.target.closest('button[data-model-remove]');
       if (!button) return;
       button.closest('.model-row').remove();
+    });
+
+    $('account-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      $('account-status').textContent = '';
+      $('account-error').textContent = '';
+      const username = $('acc-username').value.trim();
+      const newPwd = $('acc-new-pwd').value;
+      if (!username) {
+        $('account-error').textContent = '账号不能为空';
+        return;
+      }
+      if (newPwd && newPwd !== $('acc-confirm').value) {
+        $('account-error').textContent = '两次输入的新密码不一致';
+        return;
+      }
+      if (newPwd && newPwd.length < 8) {
+        $('account-error').textContent = '新密码至少 8 位';
+        return;
+      }
+      const body = {
+        current_password: $('acc-pwd').value,
+        username,
+      };
+      if (newPwd) body.new_password = newPwd;
+      try {
+        await api('/api/v1/admin/account', { method: 'POST', body });
+        $('account-status').textContent = '已保存，请使用新账号重新登录…';
+        setTimeout(() => location.reload(), 800);
+      } catch (error) {
+        $('account-error').textContent = error.message;
+      }
     });
 
     $('model-save').addEventListener('click', async () => {

@@ -138,6 +138,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 7681
 管理端 API（`/api/v1/admin/*`，Cookie 会话，12 小时过期）：
 
 - `POST /login` / `POST /logout` / `GET /me`
+- `POST /account`：修改管理员账号名/密码（需提供当前密码；新密码至少 8 位，账号名不能重复；成功后该管理员的全部会话失效）
 - `GET /orgs`、`PATCH /orgs/{id}`：修改企业名称和对外 Web 地址（两者都会随 `/api/v1/config` 下发并推进 config_version）
 - `GET/PUT/DELETE /orgs/{id}/sms`：组织级腾讯云短信配置（SecretId/SecretKey/SdkAppId/签名/模板/Region），保存后即时生效；响应只返回 SecretId 掩码与 `has_secret_key`，不返回密钥明文
 - `GET /backup`：下载 SQLite 在线快照（`.db`，含组织/人员/仓库授权/设备/审计与短信密钥，请妥善保管）；`POST /restore`：上传 `.db` 覆盖当前数据库，恢复前自动备份到 `data/db/backups/`，即时生效（设备与会话以备份为准，恢复后需重新登录）
