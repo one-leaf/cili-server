@@ -47,16 +47,15 @@ from app.services.identity import (
     list_devices,
     list_people,
     revoke_device,
+    update_org,
     update_person,
 )
 from app.services.repos import (
-    bind_repo_group,
     create_repo,
     delete_repo,
     get_repo,
-    list_repo_groups,
     list_repos,
-    unbind_repo_group,
+    repo_groups,
     update_repo,
 )
 
@@ -140,8 +139,10 @@ def _person(row) -> dict:
         "org_id": str(row["org_id"]),
         "name": str(row["name"]),
         "phone": str(row["phone"]),
+        "email": str(row["email"]),
         "enabled": bool(row["enabled"]),
         "note": str(row["note"]),
+        "model_api_key": str(row["model_api_key"]),
         "created_at": _fmt_ts(row["created_at"]),
         "updated_at": _fmt_ts(row["updated_at"]),
     }
@@ -197,10 +198,6 @@ def _repo(row) -> dict:
         "org_id": str(row["org_id"]),
         "slug": str(row["slug"]),
         "name": str(row["name"]),
-        "backend": str(row["backend"]),
-        "upstream_url": str(row["upstream_url"]),
-        "upstream_username": str(row["upstream_username"]),
-        "has_upstream_password": bool(row["upstream_password"]),
         "created_at": _fmt_ts(row["created_at"]),
     }
 
@@ -228,19 +225,28 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=256)
 
 
+class OrgUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=64)
+    web_url: str | None = Field(default=None, max_length=200)
+
+
 class PersonCreate(BaseModel):
     org_id: str
     name: str = Field(min_length=1, max_length=64)
     phone: str = Field(min_length=1, max_length=32)
+    email: str = Field(default="", max_length=200)
     enabled: bool = True
     note: str = ""
+    model_api_key: str = Field(default="", max_length=512)
 
 
 class PersonUpdate(BaseModel):
     name: str | None = None
     phone: str | None = None
+    email: str | None = Field(default=None, max_length=200)
     enabled: bool | None = None
     note: str | None = None
+    model_api_key: str | None = Field(default=None, max_length=512)
 
 
 class GroupCreate(BaseModel):
@@ -285,24 +291,10 @@ class RepoCreate(BaseModel):
     org_id: str
     slug: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=64)
-    group_ids: list[str] = []
-    backend: str = "local"
-    upstream_url: str = ""
-    upstream_username: str = ""
-    upstream_password: str = ""
 
 
 class RepoUpdate(BaseModel):
     name: str | None = None
-    backend: str | None = None
-    upstream_url: str | None = None
-    upstream_username: str | None = None
-    upstream_password: str | None = None
-
-
-class RepoGroupRequest(BaseModel):
-    group_id: str
-    can_write: bool = True
 
 
 @router.post("/login")
@@ -366,8 +358,8 @@ async def me(admin: AdminIdentity = Depends(require_admin)):
 @router.get("/orgs")
 async def orgs(request: Request, _admin=Depends(require_admin)):
     rows = list(_conn(request).execute(
-        "SELECT id, name, slug, created_at, config_version FROM organizations"
-        " ORDER BY name, id"
+        "SELECT id, name, slug, created_at, config_version, web_url"
+        " FROM organizations ORDER BY name, id"
     ))
     return {
         "orgs": [
@@ -376,9 +368,41 @@ async def orgs(request: Request, _admin=Depends(require_admin)):
                 "name": str(row["name"]),
                 "slug": str(row["slug"]),
                 "config_version": str(row["config_version"]),
+                "web_url": str(row["web_url"]),
             }
             for row in rows
         ]
+    }
+
+
+@router.patch("/orgs/{org_id}")
+async def update_org_route(
+    org_id: str, payload: OrgUpdate, request: Request,
+    _admin=Depends(require_admin),
+):
+    _check_origin(request)
+    name = payload.name.strip() if payload.name is not None else None
+    web_url = payload.web_url.strip() if payload.web_url is not None else None
+    if name is not None and not name:
+        raise ApiError(400, "invalid_request", message="组织名称不能为空")
+    if web_url and not web_url.startswith(("http://", "https://")):
+        raise ApiError(400, "invalid_request", message="对外地址必须是 http(s)")
+    _require_org(_conn(request), org_id)
+    row = _service_call(
+        update_org, _conn(request), org_id, name=name, web_url=web_url
+    )
+    _audit(
+        request, _admin, org_id, "org_update", target=org_id,
+        detail=" ".join(part for part in (name, web_url) if part),
+    )
+    return {
+        "org": {
+            "id": str(row["id"]),
+            "name": str(row["name"]),
+            "slug": str(row["slug"]),
+            "config_version": str(row["config_version"]),
+            "web_url": str(row["web_url"]),
+        }
     }
 
 
@@ -404,8 +428,10 @@ async def create_person_route(
         org_id=payload.org_id,
         name=payload.name,
         phone=payload.phone,
+        email=payload.email.strip(),
         enabled=payload.enabled,
         note=payload.note,
+        model_api_key=payload.model_api_key.strip(),
     )
     _audit(request, _admin, payload.org_id, "person_create",
            target=str(row["id"]), detail=payload.name)
@@ -426,8 +452,16 @@ async def update_person_route(
         person_id,
         name=payload.name,
         phone=payload.phone,
+        email=(
+            payload.email.strip() if payload.email is not None else None
+        ),
         enabled=payload.enabled,
         note=payload.note,
+        model_api_key=(
+            payload.model_api_key.strip()
+            if payload.model_api_key is not None
+            else None
+        ),
     )
     _audit(request, _admin, str(row["org_id"]), "person_update",
            target=person_id)
@@ -664,7 +698,13 @@ async def unbind_bundle_route(
 @router.get("/repos")
 async def repos(org_id: str, request: Request, _admin=Depends(require_admin)):
     _require_org(_conn(request), org_id)
-    return {"repos": [_repo(row) for row in list_repos(_conn(request), org_id)]}
+    conn = _conn(request)
+    items = []
+    for row in list_repos(conn, org_id):
+        item = _repo(row)
+        item["groups"] = repo_groups(conn, str(row["id"]))
+        items.append(item)
+    return {"repos": items}
 
 
 @router.post("/repos")
@@ -677,10 +717,6 @@ async def create_repo_route(
         create_repo, _conn(request),
         git_root=request.app.state.settings.git_root,
         org_id=payload.org_id, slug=payload.slug, name=payload.name,
-        group_ids=payload.group_ids, backend=payload.backend,
-        upstream_url=payload.upstream_url,
-        upstream_username=payload.upstream_username,
-        upstream_password=payload.upstream_password,
     )
     _audit(request, _admin, payload.org_id, "repo_create",
            target=str(row["id"]), detail=payload.slug)
@@ -694,12 +730,7 @@ async def update_repo_route(
 ):
     _check_origin(request)
     row = _service_call(
-        update_repo, _conn(request), repo_id,
-        git_root=request.app.state.settings.git_root,
-        name=payload.name, backend=payload.backend,
-        upstream_url=payload.upstream_url,
-        upstream_username=payload.upstream_username,
-        upstream_password=payload.upstream_password,
+        update_repo, _conn(request), repo_id, name=payload.name
     )
     _audit(request, _admin, str(row["org_id"]), "repo_update",
            target=repo_id)
@@ -722,57 +753,6 @@ async def delete_repo_route(
     return {"ok": True}
 
 
-@router.get("/repos/{repo_id}/groups")
-async def repo_groups(
-    repo_id: str, request: Request, _admin=Depends(require_admin)
-):
-    if get_repo(_conn(request), repo_id) is None:
-        raise ApiError(404, "repo_not_found")
-    return {
-        "groups": [
-            {
-                "repo_id": str(row["repo_id"]),
-                "group_id": str(row["group_id"]),
-                "group_name": str(row["group_name"]),
-                "can_write": bool(row["can_write"]),
-            }
-            for row in list_repo_groups(_conn(request), repo_id)
-        ]
-    }
-
-
-@router.post("/repos/{repo_id}/groups")
-async def bind_repo_group_route(
-    repo_id: str, payload: RepoGroupRequest, request: Request,
-    _admin=Depends(require_admin),
-):
-    _check_origin(request)
-    _service_call(
-        bind_repo_group, _conn(request),
-        repo_id=repo_id, group_id=payload.group_id, can_write=payload.can_write,
-    )
-    repo = get_repo(_conn(request), repo_id)
-    _audit(request, _admin, str(repo["org_id"]) if repo else "", "repo_acl_add",
-           target=repo_id,
-           detail=f"{payload.group_id}:{'write' if payload.can_write else 'read'}")
-    return {"ok": True}
-
-
-@router.delete("/repos/{repo_id}/groups/{group_id}")
-async def unbind_repo_group_route(
-    repo_id: str, group_id: str, request: Request,
-    _admin=Depends(require_admin),
-):
-    _check_origin(request)
-    conn = _conn(request)
-    repo = get_repo(conn, repo_id)
-    if repo is None or not unbind_repo_group(
-        conn, repo_id=repo_id, group_id=group_id
-    ):
-        raise ApiError(404, "repo_group_not_found")
-    _audit(request, _admin, str(repo["org_id"]), "repo_acl_remove",
-           target=repo_id, detail=group_id)
-    return {"ok": True}
 
 
 # ── 审计 ──────────────────────────────────────────────

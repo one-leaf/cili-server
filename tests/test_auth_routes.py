@@ -8,13 +8,18 @@ from fastapi.testclient import TestClient
 
 from app.db import connect, init_schema
 from app.main import create_app
+from app.services.groups import add_group_member, create_group
 from app.services.identity import create_org, create_person, hash_token
 from app.settings import Settings, SmsConfig, VerificationConfig
 from app.sms.base import SmsProvider, SmsSendError, SmsSendResult
 from app.sms.mock import MockSmsProvider
 
 
-def _settings(trust_forwarded_for: bool = False, **verification) -> Settings:
+def _settings(
+    trust_forwarded_for: bool = False,
+    access_log_path: str | None = None,
+    **verification,
+) -> Settings:
     values = {
         "code_pepper": "test-pepper",
         "cooldown_seconds": 60,
@@ -28,6 +33,7 @@ def _settings(trust_forwarded_for: bool = False, **verification) -> Settings:
         verification=VerificationConfig(**values),
         database_path=":memory:",
         trust_forwarded_for=trust_forwarded_for,
+        access_log_path=access_log_path,
     )
 
 
@@ -38,6 +44,7 @@ def _client(
     phone: str = "13800000000",
     enabled: bool = True,
     trust_forwarded_for: bool = False,
+    access_log_path: str | None = None,
     **verification,
 ):
     conn = connect(":memory:")
@@ -50,17 +57,23 @@ def _client(
         phone=phone,
         enabled=enabled,
     )
+    group = create_group(conn, org_id=str(org["id"]), name="研发部")
+    add_group_member(
+        conn, group_id=str(group["id"]), person_id=str(person["id"])
+    )
     provider = provider or MockSmsProvider()
     app = create_app(
         settings=_settings(
-            trust_forwarded_for=trust_forwarded_for, **verification
+            trust_forwarded_for=trust_forwarded_for,
+            access_log_path=access_log_path,
+            **verification,
         ),
         conn=conn,
         provider=provider,
     )
     try:
         with TestClient(app) as client:
-            yield client, provider, str(org["id"]), str(person["id"])
+            yield client, provider, str(org["slug"]), str(person["id"])
     finally:
         conn.close()
 
@@ -69,7 +82,27 @@ def test_health():
     with _client() as (client, _provider, _org_id, _person_id):
         response = client.get("/api/v1/health")
         assert response.status_code == 200
-        assert response.json() == {"status": "ok"}
+        body = response.json()
+        assert body["ok"] is True
+        assert body["name"] == "cili-server"
+        assert body["version"]
+
+
+def test_public_orgs_listed_by_slug():
+    with _client() as (client, _provider, _org_id, _person_id):
+        response = client.get("/api/v1/public/orgs")
+        assert response.status_code == 200
+        assert response.json() == {"orgs": [{"id": "acme", "name": "Acme"}]}
+
+
+def test_access_log_written_to_file(tmp_path):
+    log_path = tmp_path / "access.log"
+    with _client(access_log_path=str(log_path)) as (
+        client, _provider, _org_id, _person_id
+    ):
+        assert client.get("/api/v1/health").status_code == 200
+    text = log_path.read_text(encoding="utf-8")
+    assert "GET /api/v1/health 200" in text
 
 
 def test_send_and_verify_issues_device_token():
@@ -98,6 +131,7 @@ def test_send_and_verify_issues_device_token():
         assert body["org"]["id"] == org_id
         assert body["user"]["id"] == person_id
         assert body["user"]["name"] == "张三"
+        assert body["user"]["groups"] == ["研发部"]
         assert body["config_version"]
 
         conn = client.app.state.conn
@@ -111,6 +145,7 @@ def test_send_and_verify_issues_device_token():
         )
         assert me.status_code == 200
         assert me.json()["user"]["id"] == person_id
+        assert me.json()["user"]["groups"] == ["研发部"]
 
         logout = client.post(
             "/api/v1/auth/logout",

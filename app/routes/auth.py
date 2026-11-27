@@ -9,11 +9,12 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from app.errors import ApiError
+from app.services.groups import list_person_groups
 from app.services.identity import (
     authenticate_token,
     create_device,
     find_person,
-    get_org,
+    get_org_by_ref,
     revoke_token,
 )
 
@@ -62,9 +63,10 @@ def _bearer_token(request: Request) -> str:
 @router.post("/sms/send")
 async def send_sms(payload: SmsSendRequest, request: Request):
     conn = _conn(request)
-    org = get_org(conn, payload.org_id)
+    org = get_org_by_ref(conn, payload.org_id)
+    org_id = str(org["id"]) if org is not None else ""
     person = (
-        find_person(conn, payload.org_id, payload.phone)
+        find_person(conn, org_id, payload.phone)
         if org is not None
         else None
     )
@@ -79,7 +81,7 @@ async def send_sms(payload: SmsSendRequest, request: Request):
 
     result = _service(request).send_code(
         payload.phone,
-        org_id=payload.org_id,
+        org_id=org_id,
         ip=_client_ip(request),
     )
     return {"ok": True, "cooldown_seconds": result.cooldown_seconds}
@@ -88,34 +90,36 @@ async def send_sms(payload: SmsSendRequest, request: Request):
 @router.post("/sms/verify")
 async def verify_sms(payload: SmsVerifyRequest, request: Request):
     conn = _conn(request)
+    org = get_org_by_ref(conn, payload.org_id)
+    if org is None:
+        raise ApiError(404, "org_not_found")
+    org_id = str(org["id"])
     if not _service(request).verify_code(
-        payload.phone, payload.code, org_id=payload.org_id
+        payload.phone, payload.code, org_id=org_id
     ):
         raise ApiError(400, "invalid_code")
 
-    org = get_org(conn, payload.org_id)
-    if org is None:
-        raise ApiError(404, "org_not_found")
-    person = find_person(conn, payload.org_id, payload.phone)
+    person = find_person(conn, org_id, payload.phone)
     if person is None:
         raise ApiError(403, "person_disabled")
 
     token, expires_at = create_device(
         conn,
-        org_id=payload.org_id,
+        org_id=org_id,
         person_id=str(person["id"]),
         name=payload.device_name.strip(),
     )
+    groups = list_person_groups(conn, str(person["id"]))
     return {
         "token": token,
         "expires_at": datetime.fromtimestamp(expires_at).strftime(
             "%Y-%m-%d %H:%M:%S"
         ),
-        "org": {"id": str(org["id"]), "name": str(org["name"])},
+        "org": {"id": str(org["slug"]), "name": str(org["name"])},
         "user": {
             "id": str(person["id"]),
             "name": str(person["name"]),
-            "groups": [],
+            "groups": [str(group["name"]) for group in groups],
         },
         "config_version": str(org["config_version"]),
     }
@@ -129,13 +133,16 @@ async def logout(request: Request):
 
 @router.get("/me")
 async def me(request: Request):
-    device = authenticate_token(_conn(request), _bearer_token(request))
+    conn = _conn(request)
+    device = authenticate_token(conn, _bearer_token(request))
     if device is None:
         raise ApiError(401, "token_invalid")
+    groups = list_person_groups(conn, device.person_id)
     return {
-        "org": {"id": device.org_id, "name": device.org_name},
+        "org": {"id": device.org_slug, "name": device.org_name},
         "user": {"id": device.person_id, "name": device.person_name,
-                 "phone": device.phone, "groups": []},
+                 "phone": device.phone,
+                 "groups": [str(group["name"]) for group in groups]},
         "config_version": device.config_version,
         "expires_at": datetime.fromtimestamp(device.expires_at).strftime(
             "%Y-%m-%d %H:%M:%S"

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from contextlib import asynccontextmanager
+from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 
@@ -38,15 +40,43 @@ from app.sms.verification import (
 
 logger = logging.getLogger(__name__)
 
+ACCESS_LOGGER = "cili.access"
+ACCESS_LOG_MAX_BYTES = 10 * 1024 * 1024
+ACCESS_LOG_BACKUPS = 5
+
+
+def _client_ip(request: Request) -> str:
+    settings = getattr(request.app.state, "settings", None)
+    if settings is not None and settings.trust_forwarded_for:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",", 1)[0].strip()
+    return request.client.host if request.client else ""
+
+
+def _write_access_log(request: Request, status: int, started: float) -> None:
+    settings = getattr(request.app.state, "settings", None)
+    if settings is None or not settings.access_log_path:
+        return
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    logging.getLogger(ACCESS_LOGGER).info(
+        "%s %s %s %s %d %dms",
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        _client_ip(request),
+        request.method,
+        request.url.path,
+        status,
+        elapsed_ms,
+    )
+
 
 def create_app(
     *,
     settings: Settings | None = None,
     conn: sqlite3.Connection | None = None,
     provider: SmsProvider | None = None,
-    git_client: httpx.AsyncClient | None = None,
 ) -> FastAPI:
-    """创建 app；测试可注入 settings / conn / provider / git_client。"""
+    """创建 app；测试可注入 settings / conn / provider。"""
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -55,10 +85,22 @@ def create_app(
         init_schema(db_conn)
         seed_initial_admin(db_conn, cfg.admin)
         sms_provider = provider or build_provider(cfg)
-        forward_client = git_client or httpx.AsyncClient(
-            timeout=httpx.Timeout(120.0, connect=10.0),
-            follow_redirects=False,
-        )
+
+        access_handler = None
+        if cfg.access_log_path:
+            log_path = Path(cfg.access_log_path)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            access_handler = RotatingFileHandler(
+                log_path,
+                maxBytes=ACCESS_LOG_MAX_BYTES,
+                backupCount=ACCESS_LOG_BACKUPS,
+                encoding="utf-8",
+            )
+            access_handler.setFormatter(logging.Formatter("%(message)s"))
+            access_logger = logging.getLogger(ACCESS_LOGGER)
+            access_logger.setLevel(logging.INFO)
+            access_logger.propagate = False
+            access_logger.addHandler(access_handler)
 
         app.state.settings = cfg
         app.state.conn = db_conn
@@ -66,14 +108,14 @@ def create_app(
         app.state.sms_service = SmsVerificationService(
             db_conn, sms_provider, cfg.verification
         )
-        app.state.git_client = forward_client
         try:
             yield
         finally:
             if provider is None and hasattr(sms_provider, "close"):
                 sms_provider.close()
-            if git_client is None:
-                await forward_client.aclose()
+            if access_handler is not None:
+                logging.getLogger(ACCESS_LOGGER).removeHandler(access_handler)
+                access_handler.close()
             if conn is None:
                 db_conn.close()
 
@@ -84,6 +126,17 @@ def create_app(
     app.include_router(admin_router)
     app.include_router(git_router)
 
+    @app.middleware("http")
+    async def _access_log_middleware(request: Request, call_next):
+        started = time.monotonic()
+        try:
+            response = await call_next(request)
+        except Exception:
+            _write_access_log(request, 500, started)
+            raise
+        _write_access_log(request, response.status_code, started)
+        return response
+
     admin_page = Path(__file__).resolve().parent / "templates" / "admin.html"
 
     @app.get("/admin", include_in_schema=False)
@@ -93,44 +146,68 @@ def create_app(
 
     @app.exception_handler(ApiError)
     async def _api_error(_request: Request, exc: ApiError):
+        extra = dict(exc.extra)
+        message = str(extra.pop("message", "") or exc.code)
         return JSONResponse(
             status_code=exc.status_code,
-            content={"error": exc.code, **exc.extra},
+            content={"error": exc.code, "detail": message, **extra},
         )
 
     @app.exception_handler(SmsRateLimited)
     async def _rate_limited(_request: Request, exc: SmsRateLimited):
         return JSONResponse(
             status_code=429,
-            content={"error": "rate_limited", "retry_after": exc.retry_after},
+            content={
+                "error": "rate_limited",
+                "detail": str(exc),
+                "retry_after": exc.retry_after,
+            },
         )
 
     @app.exception_handler(SmsCodeExpired)
     async def _code_expired(_request: Request, exc: SmsCodeExpired):
-        return JSONResponse(status_code=400, content={"error": "code_expired"})
+        return JSONResponse(
+            status_code=400,
+            content={"error": "code_expired", "detail": str(exc)},
+        )
 
     @app.exception_handler(SmsCodeAttemptsExceeded)
     async def _attempts_exceeded(_request: Request, exc: SmsCodeAttemptsExceeded):
-        return JSONResponse(status_code=400, content={"error": "code_expired"})
+        return JSONResponse(
+            status_code=400,
+            content={"error": "code_expired", "detail": str(exc)},
+        )
 
     @app.exception_handler(SmsInvalidPhone)
     async def _invalid_phone(_request: Request, exc: SmsInvalidPhone):
-        return JSONResponse(status_code=400, content={"error": "invalid_phone"})
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_phone", "detail": str(exc)},
+        )
 
     @app.exception_handler(SmsVerificationError)
     async def _verification_error(_request: Request, exc: SmsVerificationError):
-        return JSONResponse(status_code=400, content={"error": "invalid_code"})
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_code", "detail": str(exc)},
+        )
 
     @app.exception_handler(SmsSendError)
     async def _send_error(_request: Request, exc: SmsSendError):
         # 不把上游响应体返回给客户端；只留服务端日志。
         logger.warning("[sms] provider error: %s", exc)
-        return JSONResponse(status_code=502, content={"error": "upstream_error"})
+        return JSONResponse(
+            status_code=502,
+            content={"error": "upstream_error", "detail": "upstream_error"},
+        )
 
     @app.exception_handler(SmsConfigError)
     async def _config_error(_request: Request, exc: SmsConfigError):
         logger.error("[sms] config error: %s", exc)
-        return JSONResponse(status_code=500, content={"error": "sms_not_configured"})
+        return JSONResponse(
+            status_code=500,
+            content={"error": "sms_not_configured", "detail": "sms_not_configured"},
+        )
 
     @app.exception_handler(SmsError)
     async def _sms_error(_request: Request, exc: SmsError):

@@ -60,6 +60,45 @@ def get_org(conn: sqlite3.Connection, org_id: str) -> sqlite3.Row | None:
     ).fetchone()
 
 
+def get_org_by_ref(conn: sqlite3.Connection, ref: str) -> sqlite3.Row | None:
+    """按内部 id 或 slug 查组织；客户端 API 使用 slug 作为 org_id。"""
+    value = str(ref or "").strip()
+    if not value:
+        return None
+    return conn.execute(
+        "SELECT * FROM organizations WHERE id = ? OR slug = ?",
+        (value, value),
+    ).fetchone()
+
+
+def update_org(
+    conn: sqlite3.Connection,
+    org_id: str,
+    *,
+    name: str | None = None,
+    web_url: str | None = None,
+    now: int | None = None,
+) -> sqlite3.Row:
+    """修改组织名称 / 对外 Web 地址；两者都会随配置下发，所以推进 config_version。"""
+    if get_org(conn, org_id) is None:
+        raise ValueError("组织不存在")
+    fields: list[str] = []
+    values: list[object] = []
+    if name is not None:
+        fields.append("name = ?")
+        values.append(str(name))
+    if web_url is not None:
+        fields.append("web_url = ?")
+        values.append(str(web_url))
+    if fields:
+        values.append(org_id)
+        conn.execute(
+            f"UPDATE organizations SET {', '.join(fields)} WHERE id = ?", values
+        )
+        bump_config_version(conn, org_id, now=now)
+    return get_org(conn, org_id)
+
+
 def bump_config_version(
     conn: sqlite3.Connection, org_id: str, *, now: int | None = None
 ) -> str:
@@ -79,8 +118,10 @@ def create_person(
     org_id: str,
     name: str,
     phone: str,
+    email: str = "",
     enabled: bool = True,
     note: str = "",
+    model_api_key: str = "",
     now: int | None = None,
 ) -> sqlite3.Row:
     person_id = "u_" + uuid.uuid4().hex[:12]
@@ -88,15 +129,18 @@ def create_person(
     created = int(now if now is not None else time.time())
     conn.execute(
         "INSERT INTO people"
-        " (id, org_id, name, phone, enabled, note, created_at, updated_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        " (id, org_id, name, phone, email, enabled, note, model_api_key,"
+        "  created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             person_id,
             org_id,
             name,
             normalized,
+            str(email or ""),
             1 if enabled else 0,
             note,
+            str(model_api_key or ""),
             created,
             created,
         ),
@@ -121,8 +165,10 @@ def update_person(
     *,
     name: str | None = None,
     phone: str | None = None,
+    email: str | None = None,
     enabled: bool | None = None,
     note: str | None = None,
+    model_api_key: str | None = None,
     now: int | None = None,
 ) -> sqlite3.Row:
     person = conn.execute(
@@ -138,12 +184,18 @@ def update_person(
     if phone is not None:
         fields.append("phone = ?")
         values.append(normalize_phone(phone))
+    if email is not None:
+        fields.append("email = ?")
+        values.append(str(email))
     if enabled is not None:
         fields.append("enabled = ?")
         values.append(1 if enabled else 0)
     if note is not None:
         fields.append("note = ?")
         values.append(str(note))
+    if model_api_key is not None:
+        fields.append("model_api_key = ?")
+        values.append(str(model_api_key))
     fields.append("updated_at = ?")
     values.append(int(now if now is not None else time.time()))
     values.append(person_id)

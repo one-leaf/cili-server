@@ -24,7 +24,7 @@ def _settings(
         verification=VerificationConfig(code_pepper="test"),
         admin=admin or AdminConfig(),
         database_path=":memory:",
-        git_root=git_root or "data/git",
+        git_root=git_root or "data/workspaces",
     )
 
 
@@ -99,6 +99,43 @@ def test_initial_admin_seed_from_settings():
         assert response.status_code == 200
 
 
+def test_update_org_name():
+    with _client() as (client, conn, org):
+        _login(client)
+        org_id = org["id"]
+        before = conn.execute(
+            "SELECT config_version FROM organizations WHERE id = ?", (org_id,)
+        ).fetchone()[0]
+
+        response = client.patch(
+            f"/api/v1/admin/orgs/{org_id}",
+            json={"name": "新名字", "web_url": "https://cili.example.com"},
+        )
+        assert response.status_code == 200
+        assert response.json()["org"]["name"] == "新名字"
+        assert response.json()["org"]["web_url"] == "https://cili.example.com"
+        listed = client.get("/api/v1/admin/orgs").json()["orgs"][0]
+        assert listed["name"] == "新名字"
+        assert listed["web_url"] == "https://cili.example.com"
+
+        after = conn.execute(
+            "SELECT config_version FROM organizations WHERE id = ?", (org_id,)
+        ).fetchone()[0]
+        assert after != before
+
+        missing = client.patch("/api/v1/admin/orgs/org_missing", json={"name": "x"})
+        assert missing.status_code == 404
+        assert missing.json()["error"] == "org_not_found"
+
+        blank = client.patch(f"/api/v1/admin/orgs/{org_id}", json={"name": "   "})
+        assert blank.status_code == 400
+
+        bad_url = client.patch(
+            f"/api/v1/admin/orgs/{org_id}", json={"web_url": "ftp://example.com"}
+        )
+        assert bad_url.status_code == 400
+
+
 def test_people_crud():
     with _client() as (client, _conn, org):
         _login(client)
@@ -106,21 +143,38 @@ def test_people_crud():
 
         created = client.post(
             "/api/v1/admin/people",
-            json={"org_id": org_id, "name": "张三", "phone": "13800000000"},
+            json={
+                "org_id": org_id,
+                "name": "张三",
+                "phone": "13800000000",
+                "email": "zhangsan@example.com",
+                "model_api_key": "sk-test-123",
+            },
         )
         assert created.status_code == 200
-        person_id = created.json()["person"]["id"]
+        person = created.json()["person"]
+        person_id = person["id"]
+        assert person["email"] == "zhangsan@example.com"
+        assert person["model_api_key"] == "sk-test-123"
 
         listed = client.get(f"/api/v1/admin/people?org_id={org_id}")
         assert [p["id"] for p in listed.json()["people"]] == [person_id]
+        assert listed.json()["people"][0]["model_api_key"] == "sk-test-123"
 
         updated = client.patch(
             f"/api/v1/admin/people/{person_id}",
-            json={"enabled": False, "note": "停用"},
+            json={
+                "enabled": False,
+                "note": "停用",
+                "email": "new@example.com",
+                "model_api_key": "",
+            },
         )
         assert updated.status_code == 200
         assert updated.json()["person"]["enabled"] is False
         assert updated.json()["person"]["note"] == "停用"
+        assert updated.json()["person"]["email"] == "new@example.com"
+        assert updated.json()["person"]["model_api_key"] == ""
 
         deleted = client.delete(f"/api/v1/admin/people/{person_id}")
         assert deleted.status_code == 200
@@ -155,7 +209,7 @@ def test_group_and_bundle_crud():
             json={
                 "org_id": org_id,
                 "name": "研发共享",
-                "model": {"label": "group"},
+                "model": {"label": "group", "models": {"main": {"name": "m1"}}},
                 "workspaces": [{"key": "rd", "name": "研发"}],
             },
         )
@@ -175,6 +229,60 @@ def test_group_and_bundle_crud():
         assert client.delete(f"/api/v1/admin/bindings/{binding_id}").status_code == 200
         assert client.delete(f"/api/v1/admin/bundles/{bundle_id}").status_code == 200
         assert client.delete(f"/api/v1/admin/groups/{group_id}").status_code == 200
+
+
+def test_bundle_model_validation():
+    with _client() as (client, _conn, org):
+        _login(client)
+        org_id = org["id"]
+        model = {
+            "label": "Acme 模型",
+            "protocol": "openai",
+            "auth_type": "auto",
+            "base_url": "https://llm.example/v1",
+            "models": {
+                "main": {
+                    "name": "qwen3-coder",
+                    "max_context_tokens": 200000,
+                    "max_output_tokens": 32768,
+                    "model_type": "reasoning",
+                    "input": ["text", "image"],
+                }
+            },
+        }
+        created = client.post(
+            "/api/v1/admin/bundles",
+            json={"org_id": org_id, "name": "模型包", "model": model},
+        )
+        assert created.status_code == 200
+        saved = created.json()["bundle"]["model"]
+        assert saved["models"]["main"]["name"] == "qwen3-coder"
+        assert "roles" not in saved
+
+        def create(payload):
+            return client.post(
+                "/api/v1/admin/bundles",
+                json={"org_id": org_id, "name": "错误包", "model": payload},
+            )
+
+        assert create({**model, "protocol": "grpc"}).status_code == 400
+        with_roles = create({**model, "roles": {"master": "main"}})
+        assert with_roles.status_code == 200
+        assert "roles" not in with_roles.json()["bundle"]["model"]
+        assert create(
+            {
+                **model,
+                "models": {"main": {"name": "x", "input": ["image"]}},
+            }
+        ).status_code == 400
+        assert create({**model, "models": {}}).status_code == 400
+
+        bundle_id = created.json()["bundle"]["id"]
+        cleared = client.patch(
+            f"/api/v1/admin/bundles/{bundle_id}", json={"model": {}}
+        )
+        assert cleared.status_code == 200
+        assert cleared.json()["bundle"]["model"] is None
 
 
 def test_audit_records_login_and_person_changes():
@@ -256,32 +364,41 @@ def test_devices_list_and_revoke():
         assert after["devices"][0]["revoked"] is True
 
 
-def test_repo_crud(tmp_path):
+def test_repo_crud_and_derived_groups(tmp_path):
     with _client(git_root=str(tmp_path / "git")) as (client, _conn, org):
         _login(client)
         org_id = org["id"]
-        group = client.post(
-            "/api/v1/admin/groups", json={"org_id": org_id, "name": "研发部"}
-        ).json()["group"]
-
         created = client.post(
             "/api/v1/admin/repos",
-            json={
-                "org_id": org_id,
-                "slug": "demo",
-                "name": "Demo",
-                "group_ids": [group["id"]],
-            },
+            json={"org_id": org_id, "slug": "demo", "name": "Demo"},
         )
         assert created.status_code == 200
         repo = created.json()["repo"]
         assert repo["slug"] == "demo"
 
-        listed = client.get(f"/api/v1/admin/repos?org_id={org_id}")
-        assert [r["id"] for r in listed.json()["repos"]] == [repo["id"]]
+        listed = client.get(f"/api/v1/admin/repos?org_id={org_id}").json()["repos"]
+        assert [r["id"] for r in listed] == [repo["id"]]
+        assert listed[0]["groups"] == []
 
-        acl = client.get(f"/api/v1/admin/repos/{repo['id']}/groups")
-        assert [g["group_id"] for g in acl.json()["groups"]] == [group["id"]]
+        # 授权来自配置包：工作区 key=仓库 slug 且配置包绑定群组
+        group = client.post(
+            "/api/v1/admin/groups", json={"org_id": org_id, "name": "研发部"}
+        ).json()["group"]
+        bundle = client.post(
+            "/api/v1/admin/bundles",
+            json={
+                "org_id": org_id,
+                "name": "共享",
+                "workspaces": [{"key": "demo", "name": "Demo"}],
+            },
+        ).json()["bundle"]
+        client.post(
+            f"/api/v1/admin/bundles/{bundle['id']}/bind",
+            json={"target_type": "group", "target_id": group["id"]},
+        )
+
+        listed = client.get(f"/api/v1/admin/repos?org_id={org_id}").json()["repos"]
+        assert [g["name"] for g in listed[0]["groups"]] == ["研发部"]
 
         assert client.delete(f"/api/v1/admin/repos/{repo['id']}").status_code == 200
 

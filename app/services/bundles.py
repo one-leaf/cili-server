@@ -27,6 +27,88 @@ def _dump_json(value: Any, default: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+MODEL_PROTOCOLS = frozenset(
+    {"anthropic", "openai", "openai-responses", "openai-compatible"}
+)
+MODEL_AUTH_TYPES = frozenset({"auto", "bearer", "x-api-key", "none"})
+MODEL_TYPES = frozenset({"reasoning", "chat"})
+MODEL_MODALITIES = frozenset({"text", "image", "audio", "video", "pdf"})
+
+
+def _positive_int(value: Any, field_name: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field_name} 必须是整数") from None
+    if parsed <= 0:
+        raise ValueError(f"{field_name} 必须大于 0")
+    return parsed
+
+
+def normalize_model(model: dict[str, Any] | None) -> dict[str, Any] | None:
+    """校验配置包的模型块；字段与 cili 的 provider / 模型设置一致。
+
+    空对象表示清除模型配置。``api_key`` 不在这里配置（按人员下发）。
+    """
+    if not model:
+        return None
+    if not isinstance(model, dict):
+        raise ValueError("model 必须是 JSON 对象")
+
+    result = dict(model)
+    result.setdefault("mode", "direct")
+    protocol = str(result.get("protocol") or "anthropic").strip()
+    if protocol not in MODEL_PROTOCOLS:
+        raise ValueError(f"不支持的模型协议: {protocol}")
+    result["protocol"] = protocol
+
+    auth_type = str(result.get("auth_type") or "auto").strip()
+    if auth_type not in MODEL_AUTH_TYPES:
+        raise ValueError(f"不支持的认证方式: {auth_type}")
+    result["auth_type"] = auth_type
+
+    base_url = str(result.get("base_url") or "").strip()
+    if base_url and not base_url.startswith(("http://", "https://")):
+        raise ValueError("base_url 必须是 http(s) 地址")
+    if base_url:
+        result["base_url"] = base_url
+
+    models_raw = result.get("models")
+    if not isinstance(models_raw, dict) or not models_raw:
+        raise ValueError("模型配置至少需要一个模型")
+    models: dict[str, Any] = {}
+    for alias, spec in models_raw.items():
+        alias = str(alias or "").strip()
+        if not alias:
+            raise ValueError("模型别名不能为空")
+        if not isinstance(spec, dict):
+            raise ValueError(f"模型 {alias} 的配置必须是对象")
+        entry = dict(spec)
+        entry["name"] = str(entry.get("name") or "").strip()
+        for field_name in ("max_context_tokens", "max_output_tokens"):
+            if entry.get(field_name) not in (None, ""):
+                entry[field_name] = _positive_int(entry[field_name], field_name)
+        model_type = str(entry.get("model_type") or "reasoning").strip()
+        if model_type not in MODEL_TYPES:
+            raise ValueError(f"模型 {alias} 的 model_type 必须是 reasoning 或 chat")
+        entry["model_type"] = model_type
+        if entry.get("input") is not None:
+            modalities = [str(item) for item in entry["input"]]
+            if "text" not in modalities:
+                raise ValueError(f"模型 {alias} 的 input 必须包含 text")
+            unknown = [item for item in modalities if item not in MODEL_MODALITIES]
+            if unknown:
+                raise ValueError(
+                    f"模型 {alias} 含不支持的输入模态: {', '.join(unknown)}"
+                )
+            entry["input"] = modalities
+        models[alias] = entry
+    result["models"] = models
+    # 组织配置不下发角色绑定（由客户端自行选择）
+    result.pop("roles", None)
+    return result
+
+
 def create_bundle(
     conn: sqlite3.Connection,
     *,
@@ -49,7 +131,7 @@ def create_bundle(
             org_id,
             name,
             int(priority),
-            _dump_json(model, ""),
+            _dump_json(normalize_model(model), ""),
             _dump_json(workspaces, "[]"),
             1 if is_default else 0,
             int(now if now is not None else time.time()),
@@ -96,7 +178,7 @@ def update_bundle(
         values.append(name)
     if model is not None:
         fields.append("model_json = ?")
-        values.append(_dump_json(model, ""))
+        values.append(_dump_json(normalize_model(model), ""))
     if workspaces is not None:
         fields.append("workspaces_json = ?")
         values.append(_dump_json(workspaces, "[]"))
@@ -203,6 +285,7 @@ def resolve_config(
     *,
     org: sqlite3.Row,
     person: sqlite3.Row,
+    token: str = "",
 ) -> dict[str, Any]:
     """按个人包 > 群组包 > 默认包解析模型；工作区只来自群组包。"""
     org_id = str(org["id"])
@@ -249,6 +332,15 @@ def resolve_config(
             model = candidate
             break
 
+    # 模型块注入组织 provider 名与该人员的 Key，客户端直接物化为 provider
+    if isinstance(model, dict):
+        model = dict(model)
+        model.pop("roles", None)
+        model["provider_key"] = f"org-{org['slug']}"
+        person_key = str(person["model_api_key"] or "")
+        if person_key:
+            model["api_key"] = person_key
+
     seen: dict[str, dict[str, Any]] = {}
     for bundle in group_bundles:
         entries = _load_json(bundle["workspaces_json"], [])
@@ -269,14 +361,36 @@ def resolve_config(
         seen.values(),
         key=lambda item: (item.get("group_id", ""), item.get("key", "")),
     )
+
+    # 补齐 git 块：远程地址、用户名与服务端请求所用设备令牌
+    web_url = str(org["web_url"] or "").rstrip("/")
+    for workspace in workspaces:
+        git_raw = workspace.get("git")
+        git = dict(git_raw) if isinstance(git_raw, dict) else {}
+        remote = str(git.get("remote_url") or "")
+        if not remote and web_url:
+            remote = f"{web_url}/git/{workspace.get('key', '')}.git"
+        git["remote_url"] = remote
+        git.setdefault("branch", "main")
+        git["username"] = "org"
+        git.setdefault("sync_mode", "remote_wins")
+        if token:
+            git["password"] = token
+        workspace["git"] = git
+
     version = f"{org['config_version']}-{person['updated_at']}"
     return {
         "version": version,
-        "org": {"id": org_id, "name": str(org["name"])},
+        "org": {
+            "id": str(org["slug"]),
+            "name": str(org["name"]),
+            "web_url": str(org["web_url"]),
+        },
         "user": {
             "id": person_id,
             "name": str(person["name"]),
             "phone": str(person["phone"]),
+            "email": str(person["email"]),
             "groups": [str(group["name"]) for group in groups],
         },
         "model": model,

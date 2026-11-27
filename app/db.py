@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS organizations (
     slug TEXT NOT NULL UNIQUE,
     created_at INTEGER NOT NULL,
     config_version TEXT NOT NULL DEFAULT '',
+    web_url TEXT NOT NULL DEFAULT '',
     sms_provider TEXT NOT NULL DEFAULT '',
     sms_config TEXT NOT NULL DEFAULT '{}',
     model_defaults TEXT NOT NULL DEFAULT '{}'
@@ -22,8 +23,10 @@ CREATE TABLE IF NOT EXISTS people (
     org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     phone TEXT NOT NULL,
+    email TEXT NOT NULL DEFAULT '',
     enabled INTEGER NOT NULL DEFAULT 1,
     note TEXT NOT NULL DEFAULT '',
+    model_api_key TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     UNIQUE(org_id, phone)
@@ -93,22 +96,10 @@ CREATE TABLE IF NOT EXISTS repos (
     org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     slug TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
-    backend TEXT NOT NULL DEFAULT 'local',
-    upstream_url TEXT NOT NULL DEFAULT '',
-    upstream_username TEXT NOT NULL DEFAULT '',
-    upstream_password TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_repos_org ON repos(org_id);
 
-CREATE TABLE IF NOT EXISTS repo_groups (
-    repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
-    group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    can_write INTEGER NOT NULL DEFAULT 1,
-    PRIMARY KEY(repo_id, group_id)
-);
-CREATE INDEX IF NOT EXISTS idx_repo_groups_group
-    ON repo_groups(group_id);
 
 CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -184,10 +175,11 @@ def connect(path: str | Path) -> sqlite3.Connection:
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     # 兼容上一版已经创建的库：补 org_id 列。
+    _ensure_column(conn, "organizations", "web_url", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "people", "model_api_key", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "people", "email", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "sms_codes", "org_id", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "sms_send_events", "org_id", "TEXT NOT NULL DEFAULT ''")
-    _ensure_column(conn, "repos", "upstream_username", "TEXT NOT NULL DEFAULT ''")
-    _ensure_column(conn, "repos", "upstream_password", "TEXT NOT NULL DEFAULT ''")
     conn.commit()
 
 

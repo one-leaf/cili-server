@@ -7,6 +7,7 @@
 <style>
   :root { --bg:#f6f7f9; --card:#fff; --line:#e4e7ec; --text:#1f2937; --muted:#667085; --accent:#2563eb; --danger:#dc2626; }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; }
   button, input, select, textarea { font:inherit; }
   button { cursor:pointer; }
@@ -22,6 +23,22 @@
   .btn.danger { color:var(--danger); }
   .btn.small { padding:4px 8px; font-size:12px; }
   .muted { color:var(--muted); }
+  .key { font-family:ui-monospace,Consolas,monospace; font-size:12px; word-break:break-all; }
+  .sub-title { font-size:13px; margin:14px 0 8px; color:var(--muted); font-weight:600; }
+  .model-row { display:flex; gap:6px; flex-wrap:wrap; align-items:center; padding:8px 0; border-bottom:1px dashed var(--line); }
+  .model-row input, .model-row select { padding:6px 8px; border:1px solid var(--line); border-radius:8px; }
+  .model-row input[data-f="alias"] { width:90px; }
+  .model-row input[data-f="name"] { width:150px; }
+  .model-row input[data-f="max_context_tokens"], .model-row input[data-f="max_output_tokens"] { width:110px; }
+  .model-row input[data-f="input"] { width:130px; }
+  .model-row select { width:110px; }
+  .model-row select[data-f="reasoning"] { width:100px; }
+  .model-row select[data-f="cache_control"] { width:90px; }
+  .ws-row { display:flex; gap:6px; flex-wrap:wrap; align-items:center; padding:8px 0; border-bottom:1px dashed var(--line); }
+  .ws-row input { padding:6px 8px; border:1px solid var(--line); border-radius:8px; }
+  .ws-row input[data-wf="key"] { width:130px; }
+  .ws-row input[data-wf="name"] { width:180px; }
+  .ws-row input[data-wf="remote_url"] { flex:1 1 260px; }
   .error { color:var(--danger); font-size:12px; min-height:18px; }
   .app { min-height:100vh; display:grid; grid-template-rows:auto auto 1fr; }
   .topbar { display:flex; align-items:center; gap:12px; padding:12px 20px; background:var(--card); border-bottom:1px solid var(--line); }
@@ -39,7 +56,7 @@
   th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
   th { color:var(--muted); font-size:12px; font-weight:500; }
   td .actions { display:flex; gap:4px; flex-wrap:wrap; }
-  .pill { display:inline-block; padding:1px 7px; border-radius:999px; background:#f2f4f7; color:var(--muted); font-size:11px; }
+  .pill { display:inline-block; padding:1px 7px; border:0; border-radius:999px; background:#f2f4f7; color:var(--muted); font-size:11px; }
   .pill.ok { background:#e8f7ee; color:#15803d; }
   .pill.warn { background:#fff7e6; color:#b45309; }
   .empty { color:var(--muted); padding:12px 0; }
@@ -83,6 +100,7 @@
     <button class="tab-btn" data-tab="repos">仓库</button>
     <button class="tab-btn" data-tab="devices">设备</button>
     <button class="tab-btn" data-tab="audit">审计</button>
+    <button class="tab-btn" data-tab="settings">设置</button>
   </nav>
   <main>
     <section id="tab-people" class="tab-panel">
@@ -91,7 +109,9 @@
         <form id="person-form" class="row">
           <div class="field"><label>姓名</label><input name="name" required></div>
           <div class="field"><label>手机号</label><input name="phone" required></div>
+          <div class="field"><label>邮箱</label><input name="email" type="email" placeholder="name@example.com"></div>
           <div class="field"><label>备注</label><input name="note"></div>
+          <div class="field"><label>模型 API Key（可空）</label><input name="model_api_key" type="password" autocomplete="new-password"></div>
           <button class="btn primary" type="submit">添加</button>
         </form>
         <div id="person-error" class="error"></div>
@@ -113,6 +133,16 @@
         <div id="group-error" class="error"></div>
       </div>
       <div class="panel">
+        <h2>添加成员</h2>
+        <form id="member-form" class="row">
+          <div class="field"><label>群组</label><select name="group_id"></select></div>
+          <div class="field"><label>人员</label><select name="person_id"></select></div>
+          <button class="btn primary" type="submit">添加</button>
+        </form>
+        <div id="member-status" class="muted"></div>
+        <div id="member-error" class="error"></div>
+      </div>
+      <div class="panel">
         <h2>群组列表</h2>
         <div id="groups-list"></div>
       </div>
@@ -120,22 +150,67 @@
 
     <section id="tab-bundles" class="tab-panel" hidden>
       <div class="panel">
-        <h2>新增配置包</h2>
+        <h2 id="bundle-form-title">新增配置包</h2>
         <form id="bundle-form">
           <div class="row">
             <div class="field"><label>名称</label><input name="name" required></div>
             <div class="field"><label>优先级</label><input name="priority" type="number" value="0"></div>
             <div class="field"><label>默认包</label><select name="is_default"><option value="">否</option><option value="1">是</option></select></div>
           </div>
-          <div class="field"><label>model JSON（可空）</label><textarea name="model" placeholder='{"mode":"direct","provider_key":"org-acme",...}'></textarea></div>
-          <div class="field"><label>workspaces JSON（可空）</label><textarea name="workspaces" placeholder='[{"key":"rd-shared","name":"研发部共享工作区","git":{...}}]'></textarea></div>
-          <button class="btn primary" type="submit">添加</button>
+
+          <h3 class="sub-title">模型配置（可空；API Key 按人员下发，不在这里填）</h3>
+          <div class="row">
+            <div class="field"><label>提供商名称</label><input id="model-label" placeholder="Acme 模型服务"></div>
+            <div class="field"><label>协议</label><select id="model-protocol">
+              <option value="openai">openai</option>
+              <option value="anthropic">anthropic</option>
+              <option value="openai-responses">openai-responses</option>
+            </select></div>
+            <div class="field"><label>认证方式</label><select id="model-auth">
+              <option value="auto">auto</option>
+              <option value="bearer">bearer</option>
+              <option value="x-api-key">x-api-key</option>
+              <option value="none">none</option>
+            </select></div>
+            <div class="field"><label>服务商预设</label><input id="model-backend" placeholder="custom"></div>
+          </div>
+          <div class="row">
+            <div class="field"><label>Base URL</label><input id="model-base-url" placeholder="https://llm.example/v1"></div>
+            <div class="field"><label>API 路径（可空）</label><input id="model-api-path" placeholder="/v1/messages"></div>
+            <div class="field"><label>Headers JSON（可空）</label><input id="model-headers" placeholder='{"X-Session-ID":"{session_id}"}'></div>
+          </div>
+          <div class="field">
+            <label>模型列表（别名 / API 模型 ID / 上下文 / 最大输出 / 类型 / 输入模态 / 思考 / 缓存）</label>
+            <div id="model-rows"></div>
+            <button type="button" id="model-add" class="btn small">+ 添加模型</button>
+          </div>
+          <h3 class="sub-title">共享工作区（可空；远程地址留空则用 Web 地址 + /git/&lt;key&gt;.git 拼接）</h3>
+          <div id="workspace-rows"></div>
+          <div class="field">
+            <button type="button" id="workspace-add" class="btn small">+ 添加工作区</button>
+          </div>
+          <div class="row">
+            <button class="btn primary" type="submit" id="bundle-submit">添加</button>
+            <button class="btn" type="button" id="bundle-cancel" hidden>取消编辑</button>
+          </div>
         </form>
         <div id="bundle-error" class="error"></div>
       </div>
       <div class="panel">
         <h2>配置包列表</h2>
         <div id="bundles-list"></div>
+      </div>
+      <div class="panel">
+        <h2>配置包绑定</h2>
+        <form id="bind-form" class="row">
+          <div class="field"><label>配置包</label><select name="bundle_id"></select></div>
+          <div class="field"><label>目标类型</label><select name="target_type"><option value="group">群组</option><option value="person">人员</option></select></div>
+          <div class="field"><label>目标</label><select name="target_id"></select></div>
+          <div class="field"><label>优先级</label><input name="priority" type="number" value="0"></div>
+          <button class="btn primary" type="submit">绑定</button>
+        </form>
+        <div id="bind-status" class="muted"></div>
+        <div id="bind-error" class="error"></div>
       </div>
       <div class="panel">
         <h2>绑定关系</h2>
@@ -150,14 +225,8 @@
           <div class="row">
             <div class="field"><label>slug</label><input name="slug" placeholder="rd-shared" required></div>
             <div class="field"><label>名称</label><input name="name" required></div>
-            <div class="field"><label>后端</label><select name="backend"><option value="local">local（本机裸仓库）</option><option value="forward">forward（上游 Git）</option></select></div>
-            <div class="field"><label>授权群组 ID（逗号分隔）</label><input name="group_ids"></div>
           </div>
-          <div class="row">
-            <div class="field"><label>上游 URL（forward）</label><input name="upstream_url" placeholder="https://gitlab.example/team/repo.git"></div>
-            <div class="field"><label>服务账号</label><input name="upstream_username"></div>
-            <div class="field"><label>服务账号密码/Token</label><input name="upstream_password" type="password"></div>
-          </div>
+          <p class="muted">仓库访问权限由配置包绑定推导：把该仓库的 key 写进配置包的共享工作区并绑定群组，该群组成员即获得读写权限。</p>
           <button class="btn primary" type="submit">创建仓库</button>
         </form>
         <div id="repo-error" class="error"></div>
@@ -181,13 +250,29 @@
         <div id="audit-list"></div>
       </div>
     </section>
+
+    <section id="tab-settings" class="tab-panel" hidden>
+      <div class="panel">
+        <h2>系统设置</h2>
+        <form id="settings-form" class="row">
+          <div class="field"><label>企业名称</label><input name="name" required></div>
+          <div class="field"><label>对外 Web 地址</label><input name="web_url" placeholder="https://cili.example.com"></div>
+          <button class="btn primary" type="submit">保存</button>
+        </form>
+        <div id="settings-status" class="muted"></div>
+        <div id="settings-error" class="error"></div>
+      </div>
+    </section>
   </main>
 </div>
 
 <script>
 (() => {
   'use strict';
-  const state = { orgs: [], orgId: '', tab: 'people' };
+  const state = {
+    orgs: [], orgId: '', tab: 'people', groupOptions: '', personOptions: '',
+    bundles: [], editingBundleId: '',
+  };
   const $ = (id) => document.getElementById(id);
 
   function esc(value) {
@@ -205,7 +290,8 @@
     const res = await fetch(path, opts);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const error = new Error(data.error || data.detail || ('HTTP ' + res.status));
+      const detail = data.detail && data.detail !== data.error ? data.detail : '';
+      const error = new Error(detail || data.message || data.error || ('HTTP ' + res.status));
       error.status = res.status;
       throw error;
     }
@@ -250,6 +336,17 @@
     if (state.tab === 'repos') await renderRepos();
     if (state.tab === 'devices') await renderDevices();
     if (state.tab === 'audit') await renderAudit();
+    if (state.tab === 'settings') renderSettings();
+  }
+
+  function renderSettings() {
+    const current = state.orgs.find((org) => org.id === state.orgId);
+    if (!current) return;
+    const form = $('settings-form');
+    form.elements.name.value = current.name;
+    form.elements.web_url.value = current.web_url || '';
+    $('settings-status').textContent = '';
+    $('settings-error').textContent = '';
   }
 
   function table(headers, rows) {
@@ -263,14 +360,18 @@
     const rows = data.people.map((p) => `
       <tr>
         <td>${esc(p.name)}</td><td>${esc(p.phone)}</td>
+        <td>${p.email ? esc(p.email) : '<span class="muted">未填</span>'}</td>
         <td><span class="pill ${p.enabled ? 'ok' : 'warn'}">${p.enabled ? '启用' : '停用'}</span></td>
+        <td class="key">${p.model_api_key ? esc(p.model_api_key) : '<span class="muted">未配置</span>'}</td>
         <td>${esc(p.note)}</td>
         <td class="actions">
+          <button class="btn small" data-person-key="${esc(p.id)}" data-person-key-value="${esc(p.model_api_key)}">设置 Key</button>
+          <button class="btn small" data-person-email="${esc(p.id)}" data-person-email-value="${esc(p.email)}">改邮箱</button>
           <button class="btn small" data-person-toggle="${esc(p.id)}" data-enabled="${p.enabled ? '1' : '0'}">${p.enabled ? '停用' : '启用'}</button>
           <button class="btn small danger" data-person-delete="${esc(p.id)}">删除</button>
         </td>
       </tr>`);
-    $('people-list').innerHTML = table(['姓名', '手机号', '状态', '备注', '操作'], rows);
+    $('people-list').innerHTML = table(['姓名', '手机号', '邮箱', '状态', '模型 Key', '备注', '操作'], rows);
   }
 
   async function renderGroups() {
@@ -278,58 +379,271 @@
     const rows = [];
     for (const group of data.groups) {
       const members = await api(`/api/v1/admin/groups/${encodeURIComponent(group.id)}/members`);
-      const names = members.people.map((p) => `<span class="pill">${esc(p.name)}</span>`).join(' ');
+      const names = members.people.map((p) => `
+        <button class="pill" data-group-remove="${esc(group.id)}" data-person-id="${esc(p.id)}" title="移除成员">${esc(p.name)} ×</button>
+      `).join(' ');
       rows.push(`
         <tr>
-          <td>${esc(group.name)}</td><td>${esc(group.note)}</td>
+          <td>${esc(group.name)}</td>
+          <td class="muted">${esc(group.id)}</td>
+          <td>${esc(group.note)}</td>
           <td>${names || '<span class="muted">无</span>'}</td>
           <td class="actions">
-            <button class="btn small" data-group-member="${esc(group.id)}">加成员</button>
             <button class="btn small" data-group-delete="${esc(group.id)}">删除</button>
           </td>
         </tr>`);
     }
-    $('groups-list').innerHTML = table(['名称', '备注', '成员', '操作'], rows);
+    $('groups-list').innerHTML = table(['名称', 'ID', '备注', '成员', '操作'], rows);
+
+    const people = (await api('/api/v1/admin/people' + qs())).people;
+    state.groupOptions = data.groups.map(
+      (group) => `<option value="${esc(group.id)}">${esc(group.name)}</option>`
+    ).join('');
+    state.personOptions = people.map(
+      (person) => `<option value="${esc(person.id)}">${esc(person.name)}（${esc(person.phone)}）</option>`
+    ).join('');
+    $('member-form').elements.group_id.innerHTML =
+      state.groupOptions || '<option value="">（暂无群组）</option>';
+    $('member-form').elements.person_id.innerHTML =
+      state.personOptions || '<option value="">（暂无人员）</option>';
+    $('member-status').textContent = '';
+    $('member-error').textContent = '';
   }
 
   async function renderBundles() {
     const data = await api('/api/v1/admin/bundles' + qs());
+    state.bundles = data.bundles;
+    const groups = (await api('/api/v1/admin/groups' + qs())).groups;
+    const people = (await api('/api/v1/admin/people' + qs())).people;
+    state.groupOptions = groups.map(
+      (group) => `<option value="${esc(group.id)}">${esc(group.name)}</option>`
+    ).join('');
+    state.personOptions = people.map(
+      (person) => `<option value="${esc(person.id)}">${esc(person.name)}（${esc(person.phone)}）</option>`
+    ).join('');
+
     const rows = data.bundles.map((b) => `
       <tr>
         <td>${esc(b.name)}</td><td>${b.priority}</td>
         <td>${b.is_default ? '是' : '否'}</td>
         <td><span class="muted">${b.model ? '有 model' : '无 model'} · ${(b.workspaces || []).length} 个工作区</span></td>
         <td class="actions">
-          <button class="btn small" data-bundle-bind="${esc(b.id)}">绑定</button>
+          <button class="btn small" data-bundle-edit="${esc(b.id)}">编辑</button>
           <button class="btn small danger" data-bundle-delete="${esc(b.id)}">删除</button>
         </td>
       </tr>`);
     $('bundles-list').innerHTML = table(['名称', '优先级', '默认', '内容', '操作'], rows);
 
+    $('bind-form').elements.bundle_id.innerHTML = data.bundles.map(
+      (bundle) => `<option value="${esc(bundle.id)}">${esc(bundle.name)}</option>`
+    ).join('') || '<option value="">（暂无配置包）</option>';
+    updateBindTargets();
+    $('bind-status').textContent = '';
+    $('bind-error').textContent = '';
+
     const bindings = await api('/api/v1/admin/bindings' + qs());
+    const nameOf = (type, id) => {
+      const found = (type === 'group' ? groups : people).find((item) => item.id === id);
+      return found ? found.name : '';
+    };
     const bindingRows = bindings.bindings.map((b) => `
       <tr>
         <td>${esc(b.bundle_name)}</td>
-        <td>${esc(b.target_type)}</td>
-        <td>${esc(b.target_id)}</td>
+        <td>${b.target_type === 'group' ? '群组' : '人员'}</td>
+        <td>${esc(nameOf(b.target_type, b.target_id))} <span class="muted">${esc(b.target_id)}</span></td>
         <td>${b.priority}</td>
         <td class="actions"><button class="btn small danger" data-binding-delete="${esc(b.id)}">解绑</button></td>
       </tr>`);
-    $('bindings-list').innerHTML = table(['配置包', '目标类型', '目标 ID', '优先级', '操作'], bindingRows);
+    $('bindings-list').innerHTML = table(['配置包', '目标类型', '目标', '优先级', '操作'], bindingRows);
+  }
+
+  function updateBindTargets() {
+    const type = $('bind-form').elements.target_type.value;
+    const options = type === 'person' ? state.personOptions : state.groupOptions;
+    $('bind-form').elements.target_id.innerHTML = options
+      || (type === 'person'
+        ? '<option value="">（暂无人员）</option>'
+        : '<option value="">（暂无群组）</option>');
+  }
+
+  function addModelRow(data = {}) {
+    const row = document.createElement('div');
+    row.className = 'model-row';
+    row.innerHTML = `
+      <input data-f="alias" placeholder="别名" value="${esc(data.alias || '')}">
+      <input data-f="name" placeholder="API 模型 ID" value="${esc(data.name || '')}">
+      <input data-f="max_context_tokens" type="number" placeholder="上下文" value="${esc(data.max_context_tokens || 200000)}">
+      <input data-f="max_output_tokens" type="number" placeholder="最大输出" value="${esc(data.max_output_tokens || 32768)}">
+      <select data-f="model_type">
+        <option value="reasoning">reasoning</option>
+        <option value="chat">chat</option>
+      </select>
+      <input data-f="input" placeholder="text,image" value="${esc((data.input || ['text', 'image']).join(','))}">
+      <select data-f="reasoning">
+        <option value="default">default</option>
+        <option value="off">off</option>
+        <option value="low">low</option>
+        <option value="medium">medium</option>
+        <option value="high">high</option>
+      </select>
+      <select data-f="cache_control">
+        <option value="auto">auto</option>
+        <option value="true">true</option>
+        <option value="false">false</option>
+      </select>
+      <button type="button" class="btn small danger" data-model-remove="1">删除</button>
+    `;
+    row.querySelector('[data-f="model_type"]').value = data.model_type || 'reasoning';
+    row.querySelector('[data-f="reasoning"]').value = data.reasoning || 'medium';
+    row.querySelector('[data-f="cache_control"]').value = data.cache_control || 'auto';
+    $('model-rows').appendChild(row);
+  }
+
+  function collectModel() {
+    const models = {};
+    const rows = Array.from(document.querySelectorAll('#model-rows .model-row'));
+    for (const row of rows) {
+      const get = (field) => row.querySelector(`[data-f="${field}"]`).value.trim();
+      const alias = get('alias');
+      if (!alias) throw new Error('模型别名不能为空');
+      const entry = { name: get('name') || '' };
+      const context = get('max_context_tokens');
+      const output = get('max_output_tokens');
+      if (context) entry.max_context_tokens = Number(context);
+      if (output) entry.max_output_tokens = Number(output);
+      const modalities = get('input').split(',').map((item) => item.trim()).filter(Boolean);
+      entry.input = Array.from(new Set(['text', ...modalities]));
+      entry.model_type = get('model_type') || 'reasoning';
+      entry.reasoning = get('reasoning') || 'medium';
+      entry.cache_control = get('cache_control') || 'auto';
+      models[alias] = entry;
+    }
+
+    const label = $('model-label').value.trim();
+    const backend = $('model-backend').value.trim();
+    const baseUrl = $('model-base-url').value.trim();
+    const apiPath = $('model-api-path').value.trim();
+    const headersText = $('model-headers').value.trim();
+    if (!Object.keys(models).length) {
+      if (label || backend || baseUrl || apiPath || headersText) {
+        throw new Error('模型配置至少需要一个模型');
+      }
+      return {};
+    }
+
+    const provider = { models };
+    if (label) provider.label = label;
+    provider.protocol = $('model-protocol').value;
+    provider.auth_type = $('model-auth').value;
+    if (backend && backend !== 'custom') provider.backend = backend;
+    if (baseUrl) provider.base_url = baseUrl;
+    if (apiPath) provider.api_path = apiPath;
+    if (headersText) {
+      try {
+        provider.headers = JSON.parse(headersText);
+      } catch (error) {
+        throw new Error('Headers JSON 格式错误');
+      }
+    }
+    return provider;
+  }
+
+  function addWorkspaceRow(data = {}) {
+    const row = document.createElement('div');
+    row.className = 'ws-row';
+    const git = data.git || {};
+    row.innerHTML = `
+      <input data-wf="key" placeholder="key（= 仓库 slug）" value="${esc(data.key || '')}">
+      <input data-wf="name" placeholder="名称" value="${esc(data.name || '')}">
+      <label class="muted"><input type="checkbox" data-wf="memory_enabled"${data.memory_enabled ? ' checked' : ''}> 记忆</label>
+      <input data-wf="remote_url" placeholder="Git 远程地址（可空）" value="${esc(git.remote_url || '')}">
+      <input data-wf="branch" placeholder="main" value="${esc(git.branch || '')}">
+      <span class="muted" title="组织工作区固定为远程权威">remote_wins</span>
+      <button type="button" class="btn small danger" data-workspace-remove="1">删除</button>
+    `;
+    $('workspace-rows').appendChild(row);
+  }
+
+  function collectWorkspaces() {
+    const rows = Array.from(document.querySelectorAll('#workspace-rows .ws-row'));
+    return rows.map((row) => {
+      const get = (field) => row.querySelector(`[data-wf="${field}"]`).value.trim();
+      const key = get('key');
+      if (!key) throw new Error('工作区 key 不能为空');
+      const entry = {
+        key,
+        name: get('name') || key,
+        memory_enabled: row.querySelector('[data-wf="memory_enabled"]').checked,
+      };
+      const git = { sync_mode: 'remote_wins' };
+      const remote = get('remote_url');
+      const branch = get('branch');
+      if (remote) git.remote_url = remote;
+      if (branch) git.branch = branch;
+      entry.git = git;
+      return entry;
+    });
+  }
+
+  function resetBundleForm() {
+    $('bundle-form').reset();
+    $('model-rows').innerHTML = '';
+    $('workspace-rows').innerHTML = '';
+    for (const id of ['model-label', 'model-backend', 'model-base-url', 'model-api-path', 'model-headers']) {
+      $(id).value = '';
+    }
+    $('model-protocol').value = 'openai';
+    $('model-auth').value = 'auto';
+    state.editingBundleId = '';
+    $('bundle-form-title').textContent = '新增配置包';
+    $('bundle-submit').textContent = '添加';
+    $('bundle-cancel').hidden = true;
+    $('bundle-error').textContent = '';
+  }
+
+  function fillBundleForm(bundle) {
+    const form = $('bundle-form');
+    form.elements.name.value = bundle.name;
+    form.elements.priority.value = bundle.priority;
+    form.elements.is_default.value = bundle.is_default ? '1' : '';
+    $('workspace-rows').innerHTML = '';
+    for (const workspace of bundle.workspaces || []) {
+      addWorkspaceRow(workspace);
+    }
+    const model = bundle.model || {};
+    $('model-label').value = model.label || '';
+    $('model-protocol').value = model.protocol || 'openai';
+    $('model-auth').value = model.auth_type || 'auto';
+    $('model-backend').value = model.backend || '';
+    $('model-base-url').value = model.base_url || '';
+    $('model-api-path').value = model.api_path || '';
+    $('model-headers').value = model.headers ? JSON.stringify(model.headers) : '';
+    $('model-rows').innerHTML = '';
+    for (const [alias, spec] of Object.entries(model.models || {})) {
+      addModelRow({ ...spec, alias });
+    }
+    state.editingBundleId = bundle.id;
+    $('bundle-form-title').textContent = '编辑配置包';
+    $('bundle-submit').textContent = '保存修改';
+    $('bundle-cancel').hidden = false;
+    $('bundle-error').textContent = '';
   }
 
   async function renderRepos() {
     const data = await api('/api/v1/admin/repos' + qs());
-    const rows = data.repos.map((repo) => `
+    const rows = data.repos.map((repo) => {
+      const groups = (repo.groups || []).map((group) => esc(group.name)).join('、');
+      return `
       <tr>
         <td>${esc(repo.slug)}</td><td>${esc(repo.name)}</td>
-        <td>${esc(repo.backend)}</td><td>${esc(repo.created_at)}</td>
-        <td class="actions">
-          <button class="btn small" data-repo-acl="${esc(repo.id)}">授权群组</button>
-          <button class="btn small danger" data-repo-delete="${esc(repo.id)}">删除</button>
-        </td>
-      </tr>`);
-    $('repos-list').innerHTML = table(['slug', '名称', '后端', '创建时间', '操作'], rows);
+        <td>${groups || '<span class="muted">未绑定配置包</span>'}</td>
+        <td>${esc(repo.created_at)}</td>
+        <td class="actions"><button class="btn small danger" data-repo-delete="${esc(repo.id)}">删除</button></td>
+      </tr>`;
+    });
+    $('repos-list').innerHTML = table(
+      ['slug', '名称', '授权群组（来自配置包）', '创建时间', '操作'], rows
+    );
   }
 
   async function renderDevices() {
@@ -380,6 +694,31 @@
       await renderTab();
     });
 
+    $('settings-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const current = state.orgs.find((org) => org.id === state.orgId);
+      if (!current) return;
+      $('settings-status').textContent = '';
+      $('settings-error').textContent = '';
+      const form = new FormData(event.target);
+      try {
+        const data = await api(`/api/v1/admin/orgs/${encodeURIComponent(current.id)}`, {
+          method: 'PATCH',
+          body: {
+            name: String(form.get('name') || '').trim(),
+            web_url: String(form.get('web_url') || '').trim(),
+          },
+        });
+        current.name = data.org.name;
+        current.web_url = data.org.web_url;
+        const option = Array.from($('org-select').options).find((o) => o.value === current.id);
+        if (option) option.textContent = data.org.name;
+        $('settings-status').textContent = '已保存';
+      } catch (error) {
+        $('settings-error').textContent = error.message;
+      }
+    });
+
     document.querySelectorAll('.tab-btn').forEach((btn) => {
       btn.addEventListener('click', async () => {
         document.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('active'));
@@ -399,7 +738,14 @@
       try {
         await api('/api/v1/admin/people', {
           method: 'POST',
-          body: { org_id: state.orgId, name: form.get('name'), phone: form.get('phone'), note: form.get('note') },
+          body: {
+            org_id: state.orgId,
+            name: form.get('name'),
+            phone: form.get('phone'),
+            email: form.get('email') || '',
+            note: form.get('note'),
+            model_api_key: form.get('model_api_key') || '',
+          },
         });
         event.target.reset();
         await renderPeople();
@@ -420,41 +766,107 @@
       } catch (error) { $('group-error').textContent = error.message; }
     });
 
+    $('member-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      $('member-status').textContent = '';
+      $('member-error').textContent = '';
+      const form = new FormData(event.target);
+      try {
+        await api(`/api/v1/admin/groups/${encodeURIComponent(form.get('group_id'))}/members`, {
+          method: 'POST',
+          body: { person_id: form.get('person_id') },
+        });
+        await renderGroups();
+        $('member-status').textContent = '已添加';
+      } catch (error) {
+        $('member-error').textContent = error.message;
+      }
+    });
+
+    $('model-add').addEventListener('click', () => addModelRow());
+
+    $('model-rows').addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-model-remove]');
+      if (!button) return;
+      button.closest('.model-row').remove();
+    });
+
+    $('workspace-add').addEventListener('click', () => addWorkspaceRow());
+
+    $('workspace-rows').addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-workspace-remove]');
+      if (!button) return;
+      button.closest('.ws-row').remove();
+    });
+
+    $('bundle-cancel').addEventListener('click', resetBundleForm);
+
     $('bundle-form').addEventListener('submit', async (event) => {
       event.preventDefault();
       $('bundle-error').textContent = '';
       const form = new FormData(event.target);
-      let model = null;
-      let workspaces = [];
+      let model;
+      let workspaces;
       try {
-        model = String(form.get('model') || '').trim() ? JSON.parse(form.get('model')) : null;
-        workspaces = String(form.get('workspaces') || '').trim() ? JSON.parse(form.get('workspaces')) : [];
+        model = collectModel();
+        workspaces = collectWorkspaces();
       } catch (error) {
-        $('bundle-error').textContent = 'JSON 格式错误';
+        $('bundle-error').textContent = error.message;
         return;
       }
       try {
-        await api('/api/v1/admin/bundles', {
+        const payload = {
+          name: form.get('name'),
+          priority: Number(form.get('priority') || 0),
+          is_default: form.get('is_default') === '1',
+          model,
+          workspaces,
+        };
+        if (state.editingBundleId) {
+          await api(
+            `/api/v1/admin/bundles/${encodeURIComponent(state.editingBundleId)}`,
+            { method: 'PATCH', body: payload },
+          );
+        } else {
+          await api('/api/v1/admin/bundles', {
+            method: 'POST',
+            body: { ...payload, org_id: state.orgId },
+          });
+        }
+        resetBundleForm();
+        await renderBundles();
+      } catch (error) {
+        $('bundle-error').textContent = error.message;
+      }
+    });
+
+    $('bind-form').elements.target_type.addEventListener('change', updateBindTargets);
+
+    $('bind-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      $('bind-status').textContent = '';
+      $('bind-error').textContent = '';
+      const form = new FormData(event.target);
+      try {
+        await api(`/api/v1/admin/bundles/${encodeURIComponent(form.get('bundle_id'))}/bind`, {
           method: 'POST',
           body: {
-            org_id: state.orgId,
-            name: form.get('name'),
+            target_type: form.get('target_type'),
+            target_id: form.get('target_id'),
             priority: Number(form.get('priority') || 0),
-            is_default: form.get('is_default') === '1',
-            model,
-            workspaces,
           },
         });
-        event.target.reset();
         await renderBundles();
-      } catch (error) { $('bundle-error').textContent = error.message; }
+        $('bind-status').textContent = '已绑定';
+      } catch (error) {
+        $('bind-error').textContent = error.message;
+      }
     });
 
     $('repo-form').addEventListener('submit', async (event) => {
       event.preventDefault();
       $('repo-error').textContent = '';
       const form = new FormData(event.target);
-      const groupIds = String(form.get('group_ids') || '').split(',').map((x) => x.trim()).filter(Boolean);
       try {
         await api('/api/v1/admin/repos', {
           method: 'POST',
@@ -462,11 +874,6 @@
             org_id: state.orgId,
             slug: form.get('slug'),
             name: form.get('name'),
-            group_ids: groupIds,
-            backend: form.get('backend') || 'local',
-            upstream_url: form.get('upstream_url') || '',
-            upstream_username: form.get('upstream_username') || '',
-            upstream_password: form.get('upstream_password') || '',
           },
         });
         event.target.reset();
@@ -492,25 +899,34 @@
           if (!confirm('删除该群组？')) return;
           await api(`/api/v1/admin/groups/${encodeURIComponent(target.dataset.groupDelete)}`, { method: 'DELETE' });
           await renderGroups();
-        } else if (target.dataset.groupMember) {
-          const personId = prompt('人员 ID');
-          if (!personId) return;
-          await api(`/api/v1/admin/groups/${encodeURIComponent(target.dataset.groupMember)}/members`, {
-            method: 'POST', body: { person_id: personId.trim() },
+        } else if (target.dataset.personEmail) {
+          const value = prompt('邮箱', target.dataset.personEmailValue || '');
+          if (value === null) return;
+          await api(`/api/v1/admin/people/${encodeURIComponent(target.dataset.personEmail)}`, {
+            method: 'PATCH',
+            body: { email: value.trim() },
           });
+          await renderPeople();
+        } else if (target.dataset.personKey) {
+          const value = prompt('模型 API Key（留空清除）', target.dataset.personKeyValue || '');
+          if (value === null) return;
+          await api(`/api/v1/admin/people/${encodeURIComponent(target.dataset.personKey)}`, {
+            method: 'PATCH',
+            body: { model_api_key: value.trim() },
+          });
+          await renderPeople();
+        } else if (target.dataset.groupRemove) {
+          if (!confirm('从群组中移除该成员？')) return;
+          await api(`/api/v1/admin/groups/${encodeURIComponent(target.dataset.groupRemove)}/members/${encodeURIComponent(target.dataset.personId)}`, { method: 'DELETE' });
           await renderGroups();
-        } else if (target.dataset.bundleBind) {
-          const targetType = prompt('绑定到 group 还是 person？', 'group');
-          if (!targetType) return;
-          const targetId = prompt('目标 ID');
-          if (!targetId) return;
-          await api(`/api/v1/admin/bundles/${encodeURIComponent(target.dataset.bundleBind)}/bind`, {
-            method: 'POST', body: { target_type: targetType.trim(), target_id: targetId.trim() },
-          });
-          await renderBundles();
+        } else if (target.dataset.bundleEdit) {
+          const bundle = state.bundles.find((item) => item.id === target.dataset.bundleEdit);
+          if (!bundle) return;
+          fillBundleForm(bundle);
         } else if (target.dataset.bundleDelete) {
           if (!confirm('删除该配置包？')) return;
           await api(`/api/v1/admin/bundles/${encodeURIComponent(target.dataset.bundleDelete)}`, { method: 'DELETE' });
+          if (state.editingBundleId === target.dataset.bundleDelete) resetBundleForm();
           await renderBundles();
         } else if (target.dataset.bindingDelete) {
           await api(`/api/v1/admin/bindings/${encodeURIComponent(target.dataset.bindingDelete)}`, { method: 'DELETE' });
@@ -519,13 +935,6 @@
           if (!confirm('删除仓库及裸仓库目录？')) return;
           await api(`/api/v1/admin/repos/${encodeURIComponent(target.dataset.repoDelete)}`, { method: 'DELETE' });
           await renderRepos();
-        } else if (target.dataset.repoAcl) {
-          const groupId = prompt('群组 ID');
-          if (!groupId) return;
-          await api(`/api/v1/admin/repos/${encodeURIComponent(target.dataset.repoAcl)}/groups`, {
-            method: 'POST', body: { group_id: groupId.trim(), can_write: true },
-          });
-          alert('已授权');
         } else if (target.dataset.deviceRevoke) {
           if (!confirm('吊销该设备令牌？')) return;
           await api(`/api/v1/admin/devices/${encodeURIComponent(target.dataset.deviceRevoke)}/revoke`, { method: 'POST' });

@@ -10,7 +10,6 @@ import time
 from pathlib import Path
 
 from fastapi import APIRouter, Request, Response
-from fastapi.responses import StreamingResponse
 
 from app.services.audit import record as record_audit
 from app.services.identity import authenticate_token
@@ -93,19 +92,12 @@ async def _serve(request: Request, repo_name: str, path_info: str, action: str) 
     if repo is None or str(repo["org_id"]) != device.org_id:
         return Response(status_code=404, content=b"not found")
 
+    # 授权由配置包绑定推导：配置包含该工作区的群组成员一律读写
     access = repo_access(
         request.app.state.conn, person_id=device.person_id, repo_id=str(repo["id"])
     )
     if access is None:
         return Response(status_code=403, content=b"forbidden")
-    if action == "receive" and access != "write":
-        return Response(status_code=403, content=b"read-only")
-    if (
-        action == "info_refs"
-        and request.query_params.get("service") == "git-receive-pack"
-        and access != "write"
-    ):
-        return Response(status_code=403, content=b"read-only")
 
     content_length = request.headers.get("content-length", "")
     if content_length:
@@ -117,11 +109,6 @@ async def _serve(request: Request, repo_name: str, path_info: str, action: str) 
     body = await request.body()
     if len(body) > MAX_BODY_BYTES:
         return Response(status_code=413, content=b"payload too large")
-
-    if str(repo["backend"]) == "forward":
-        return await _forward(
-            request, device, repo, slug, path_info, action, body
-        )
 
     git_root = Path(request.app.state.settings.git_root)
     path = repo_path(git_root, slug)
@@ -175,80 +162,6 @@ async def _serve(request: Request, repo_name: str, path_info: str, action: str) 
         response.status_code, len(response.body), elapsed_ms,
     )
     return response
-
-
-async def _forward(
-    request: Request,
-    device,
-    repo,
-    slug: str,
-    path_info: str,
-    action: str,
-    body: bytes,
-) -> Response:
-    upstream = str(repo["upstream_url"] or "").strip().rstrip("/")
-    if not upstream.startswith(("http://", "https://")):
-        return Response(status_code=500, content=b"invalid upstream")
-
-    url = upstream + path_info
-    if request.url.query:
-        url += "?" + request.url.query
-
-    headers: dict[str, str] = {}
-    for name in ("content-type", "git-protocol", "accept", "accept-encoding", "user-agent"):
-        value = request.headers.get(name)
-        if value:
-            headers[name] = value
-    username = str(repo["upstream_username"] or "")
-    password = str(repo["upstream_password"] or "")
-    if username or password:
-        raw = f"{username or 'org'}:{password}".encode("utf-8")
-        headers["authorization"] = "Basic " + base64.b64encode(raw).decode("ascii")
-
-    started = time.monotonic()
-    client = request.app.state.git_client
-    try:
-        upstream_request = client.build_request(
-            request.method,
-            url,
-            headers=headers,
-            content=body if body else None,
-        )
-        upstream_response = await client.send(upstream_request, stream=True)
-    except Exception as exc:  # noqa: BLE001
-        _audit_git(request, device, repo, "git_error", 502, 0, 0)
-        return Response(status_code=502, content=b"upstream unavailable")
-
-    response_headers = {
-        key: value
-        for key, value in upstream_response.headers.items()
-        if key.lower() not in {"content-length", "transfer-encoding", "connection"}
-    }
-    audit_action = {
-        "info_refs": "git_info_refs",
-        "upload": "git_upload_pack",
-        "receive": "git_receive_pack",
-    }.get(action, "git_request")
-
-    async def stream():
-        total = 0
-        try:
-            async for chunk in upstream_response.aiter_raw():
-                total += len(chunk)
-                yield chunk
-        finally:
-            await upstream_response.aclose()
-            elapsed_ms = int((time.monotonic() - started) * 1000)
-            _audit_git(
-                request, device, repo, audit_action,
-                upstream_response.status_code, total, elapsed_ms,
-            )
-
-    return StreamingResponse(
-        stream(),
-        status_code=upstream_response.status_code,
-        headers=response_headers,
-    )
 
 
 @router.get("/git/{repo_name}/info/refs")

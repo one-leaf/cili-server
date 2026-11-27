@@ -1,7 +1,7 @@
 """cili-server 设置加载。
 
 当前只包含短信配置；后续的监听地址、数据库、组织等配置继续加在这里。
-真实 ``config.json`` 不进 Git，仓库只保留 ``config.example.json``。
+真实 ``config.json`` 放在 ``data/`` 下（不进 Git，仓库只保留 ``config.example.json``）。
 """
 
 from __future__ import annotations
@@ -14,9 +14,10 @@ from pathlib import Path
 from app.sms.base import SmsConfigError
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.json"
-DEFAULT_DATABASE_PATH = PROJECT_ROOT / "data" / "cili-server.db"
-DEFAULT_GIT_ROOT = PROJECT_ROOT / "data" / "git"
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "data" / "config" / "config.json"
+DEFAULT_DATABASE_PATH = PROJECT_ROOT / "data" / "db" / "cili-server.db"
+DEFAULT_LOG_PATH = PROJECT_ROOT / "data" / "logs" / "access.log"
+DEFAULT_GIT_ROOT = PROJECT_ROOT / "data" / "workspaces"
 
 SUPPORTED_PROVIDERS = frozenset({"tencent", "mock", "webhook", "aliyun"})
 
@@ -77,6 +78,8 @@ class Settings:
     database_path: str = str(DEFAULT_DATABASE_PATH)
     git_root: str = str(DEFAULT_GIT_ROOT)
     trust_forwarded_for: bool = False
+    # 访问日志文件；None 表示不写文件（测试直接构造的 Settings 即如此）。
+    access_log_path: str | None = None
 
 
 
@@ -249,6 +252,7 @@ def load_settings(path: str | Path | None = None) -> Settings:
         database_path=str(database_path),
         git_root=str(git_root),
         trust_forwarded_for=trust_forwarded_for,
+        access_log_path=str(DEFAULT_LOG_PATH),
     )
 
 

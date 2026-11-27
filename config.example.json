@@ -1,12 +1,12 @@
 {
   "database": {
-    "path": "data/cili-server.db"
+    "path": "data/db/cili-server.db"
   },
   "server": {
     "trust_forwarded_for": false
   },
   "git": {
-    "root": "data/git"
+    "root": "data/workspaces"
   },
   "admin": {
     "initial_username": "admin",

@@ -32,9 +32,8 @@ def _normalize_etag(value: str) -> str:
 @router.get("/config")
 async def get_config(request: Request):
     conn = request.app.state.conn
-    device = authenticate_token(
-        conn, _bearer_token(request), require_enabled=False
-    )
+    token = _bearer_token(request)
+    device = authenticate_token(conn, token, require_enabled=False)
     if device is None:
         raise ApiError(401, "token_invalid")
 
@@ -48,7 +47,7 @@ async def get_config(request: Request):
     if person is None or not int(person["enabled"]):
         raise ApiError(403, "person_disabled")
 
-    payload = resolve_config(conn, org=org, person=person)
+    payload = resolve_config(conn, org=org, person=person, token=token)
     etag = f'"{payload["version"]}"'
     if _normalize_etag(request.headers.get("if-none-match", "")) == payload["version"]:
         return Response(status_code=304, headers={"ETag": etag})
