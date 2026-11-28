@@ -77,7 +77,9 @@ def test_initial_gitignore_does_not_exclude_cili(tmp_path):
         assert result.returncode == 0
         # 会话/记忆/MCP/workflow 都同步，仅 tmp 与本地敏感词保留
         assert ".cili/tmp/" in result.stdout
-        assert ".cili/sensitive_words.json" in result.stdout
+        assert ".cili/cache/" in result.stdout
+        assert ".cili/runtime/" in result.stdout
+        assert ".cili/sensitive_words.json" not in result.stdout
         assert "!.cili/" not in result.stdout
 
 

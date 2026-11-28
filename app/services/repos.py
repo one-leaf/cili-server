@@ -46,10 +46,10 @@ def _run_git(args: list[str], *, cwd: str | Path | None = None,
     return result.stdout
 
 
-# 共享工作区里 .cili 默认全部同步（会话/记忆/MCP/workflow），
-# 只有临时下载与本地敏感词规则保留在本机。
+# 共享工作区里 .cili 默认全部同步（会话/记忆/MCP/workflow/cron/tools/敏感词），
+# 只有 tmp / cache / runtime 保留在本机。
 _CILI_IGNORE_PREFIXES = (".cili/", "!.cili/")
-_SHARED_GITIGNORE_RULES = (".cili/tmp/", ".cili/sensitive_words.json")
+_SHARED_GITIGNORE_RULES = (".cili/tmp/", ".cili/cache/", ".cili/runtime/")
 
 
 def _identity_env() -> dict:
@@ -124,7 +124,7 @@ def ensure_shared_gitignore(git_root: str | Path, slug: str) -> bool:
         commit = _run_git(
             [
                 *git_dir, "commit-tree", tree.decode(), "-p", head.decode(),
-                "-m", "chore: 共享 .cili（会话/记忆/MCP/workflow），保留 tmp 与敏感词本地",
+                "-m", "chore: 共享 .cili（含敏感词），保留 tmp/cache/runtime 本地",
             ],
             env=env,
         ).strip()
