@@ -424,6 +424,7 @@
     const rows = data.people.map((p) => `
       <tr>
         <td>${esc(p.name)}</td><td>${esc(p.phone)}</td>
+        <td>${p.last_seen_at ? esc(p.last_seen_at) : '<span class="muted">从未登录</span>'}</td>
         <td><span class="pill ${p.enabled ? 'ok' : 'warn'}">${p.enabled ? '启用' : '停用'}</span></td>
         <td class="key">${p.model_api_key ? esc(p.model_api_key) : '<span class="muted">未配置</span>'}</td>
         <td>${esc(p.note)}</td>
@@ -433,7 +434,7 @@
           <button class="btn small danger" data-person-delete="${esc(p.id)}">删除</button>
         </td>
       </tr>`);
-    $('people-list').innerHTML = table(['姓名', '手机号', '状态', '模型 Key', '备注', '操作'], rows);
+    $('people-list').innerHTML = table(['姓名', '手机号', '最近登录', '状态', '模型 Key', '备注', '操作'], rows);
   }
 
   async function renderGroups() {

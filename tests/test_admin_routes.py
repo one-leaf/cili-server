@@ -307,10 +307,13 @@ def test_people_crud():
         person = created.json()["person"]
         person_id = person["id"]
         assert person["model_api_key"] == "sk-test-123"
+        assert person["last_seen_at"] == ""
 
+        create_device(_conn, org_id=org_id, person_id=person_id, name="手机")
         listed = client.get(f"/api/v1/admin/people?org_id={org_id}")
         assert [p["id"] for p in listed.json()["people"]] == [person_id]
         assert listed.json()["people"][0]["model_api_key"] == "sk-test-123"
+        assert listed.json()["people"][0]["last_seen_at"] != ""
 
         updated = client.patch(
             f"/api/v1/admin/people/{person_id}",

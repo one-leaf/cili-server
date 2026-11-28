@@ -159,7 +159,11 @@ def create_person(
 def list_people(conn: sqlite3.Connection, org_id: str) -> list[sqlite3.Row]:
     return list(
         conn.execute(
-            "SELECT * FROM people WHERE org_id = ? ORDER BY name, id", (org_id,)
+            "SELECT p.*,"
+            " (SELECT MAX(d.last_seen_at) FROM devices d"
+            "  WHERE d.person_id = p.id) AS last_seen_at"
+            " FROM people p WHERE p.org_id = ? ORDER BY p.name, p.id",
+            (org_id,),
         )
     )
 

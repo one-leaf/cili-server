@@ -287,6 +287,9 @@ def _person(row) -> dict:
         "model_api_key": str(row["model_api_key"]),
         "created_at": _fmt_ts(row["created_at"]),
         "updated_at": _fmt_ts(row["updated_at"]),
+        "last_seen_at": (
+            _fmt_ts(row["last_seen_at"]) if "last_seen_at" in row.keys() else ""
+        ),
     }
 
 
