@@ -71,7 +71,8 @@ def test_initial_gitignore_does_not_exclude_cili(tmp_path):
         result = subprocess.run(
             ["git", "--git-dir", str(repo), "cat-file", "blob", "HEAD:.gitignore"],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
         assert result.returncode == 0
@@ -80,6 +81,12 @@ def test_initial_gitignore_does_not_exclude_cili(tmp_path):
         assert ".cili/cache/" in result.stdout
         assert ".cili/runtime/" in result.stdout
         assert ".cili/sensitive_words.json" not in result.stdout
+        for rule in (
+            "__pycache__/", ".DS_Store", "node_modules/", ".env",
+            "~$*", ".~lock.*#", "*.wbk", "target/",
+        ):
+            assert rule in result.stdout
+        assert ".env.example" not in result.stdout
         assert "!.cili/" not in result.stdout
 
 

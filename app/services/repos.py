@@ -49,7 +49,105 @@ def _run_git(args: list[str], *, cwd: str | Path | None = None,
 # 共享工作区里 .cili 默认全部同步（会话/记忆/MCP/workflow/cron/tools/敏感词），
 # 只有 tmp / cache / runtime 保留在本机。
 _CILI_IGNORE_PREFIXES = (".cili/", "!.cili/")
-_SHARED_GITIGNORE_RULES = (".cili/tmp/", ".cili/cache/", ".cili/runtime/")
+_LOCAL_ONLY_CILI = (".cili/tmp/", ".cili/cache/", ".cili/runtime/")
+
+# 新建共享仓库的初始 .gitignore：保留 .cili 共享语义，并忽略常见临时/构建文件
+BASE_GITIGNORE = """# cili：仅以下三项保留本机，其余 .cili 内容参与同步（会话/记忆/MCP/workflow/cron/tools/敏感词）
+.cili/tmp/
+.cili/cache/
+.cili/runtime/
+
+# 系统 / 编辑器临时文件
+.DS_Store
+._*
+.Spotlight-V100/
+.Trashes/
+.fseventsd/
+[Tt]humbs.db
+[Ee]hthumbs.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.swp
+*.swo
+*~
+*.bak
+*.orig
+*.rej
+*.tmp
+*.temp
+.idea/
+.vscode/
+.vs/
+*.suo
+*.user
+
+# Office / WPS 临时与锁文件（不影响正常的 .doc/.docx/.xls/.xlsx/.ppt/.pptx）
+~$*
+~WRL*.tmp
+~*.tmp
+.~lock.*#
+*.wbk
+*.xlk
+*.asd
+
+# 日志 / 环境变量（不忽略模板类 env 文件）
+*.log
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+.venv/
+venv/
+.tox/
+.nox/
+*.egg-info/
+.ipynb_checkpoints/
+
+# Node / 前端
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+coverage/
+.next/
+.nuxt/
+.svelte-kit/
+.turbo/
+.parcel-cache/
+dist/
+build/
+
+# JVM / Rust / .NET 构建产物
+*.class
+target/
+*.o
+*.obj
+*.pdb
+"""
+_BASE_GITIGNORE_RULES = tuple(
+    line
+    for line in BASE_GITIGNORE.splitlines()
+    if line.strip() and not line.lstrip().startswith("#")
+)
+_BASE_GITIGNORE_COMMENTS = frozenset(
+    line.strip()
+    for line in BASE_GITIGNORE.splitlines()
+    if line.lstrip().startswith("#")
+)
+# 旧版本基线的过宽规则，迁移时移除（如会误伤 .env.example）
+_OBSOLETE_GITIGNORE_RULES = frozenset({".env.*"})
 
 
 def _identity_env() -> dict:
@@ -66,20 +164,19 @@ def _identity_env() -> dict:
 
 
 def _merge_shared_gitignore(existing: str) -> str:
-    raw_lines = existing.splitlines()
-    lines = [
-        line
-        for line in raw_lines
-        if not line.strip().startswith(_CILI_IGNORE_PREFIXES)
-        or line.strip() in _SHARED_GITIGNORE_RULES
-    ]
-    known = {line.strip() for line in lines}
-    for rule in _SHARED_GITIGNORE_RULES:
-        if rule not in known:
-            lines.append(rule)
-    while lines and not lines[-1].strip():
-        lines.pop()
-    desired = "\n".join(lines) + ("\n" if lines else "")
+    """统一为最新 BASE_GITIGNORE：公共规则在前，用户自定义规则在后。"""
+    known = set(_BASE_GITIGNORE_RULES) | set(_OBSOLETE_GITIGNORE_RULES)
+    user_lines = []
+    for line in existing.splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        if text.startswith(_CILI_IGNORE_PREFIXES) and text not in _LOCAL_ONLY_CILI:
+            continue
+        if text in known or text in _BASE_GITIGNORE_COMMENTS:
+            continue
+        user_lines.append(line)
+    desired = BASE_GITIGNORE + ("" if not user_lines else "\n".join(user_lines) + "\n")
     return existing if desired == existing else desired
 
 
@@ -124,7 +221,7 @@ def ensure_shared_gitignore(git_root: str | Path, slug: str) -> bool:
         commit = _run_git(
             [
                 *git_dir, "commit-tree", tree.decode(), "-p", head.decode(),
-                "-m", "chore: 共享 .cili（含敏感词），保留 tmp/cache/runtime 本地",
+                "-m", "chore: 共享 .cili，补充常见临时文件忽略",
             ],
             env=env,
         ).strip()
@@ -158,7 +255,7 @@ def _init_bare_repo(path: Path) -> None:
     env = _identity_env()
     blob = _run_git(
         ["--git-dir", str(path), "hash-object", "-w", "--stdin"],
-        input_bytes=("\n".join(_SHARED_GITIGNORE_RULES) + "\n").encode("utf-8"),
+        input_bytes=BASE_GITIGNORE.encode("utf-8"),
         env=env,
     ).strip()
     tree = _run_git(
